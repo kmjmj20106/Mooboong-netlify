@@ -1,0 +1,29 @@
+{
+  "name": "mooboong-space",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "무붕 멤버·팀 엑셀 등록과 합주실 예약, 공지, 위키",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "test:netlify": "node --test tests/netlify*.test.mjs tests/file-formats.test.mjs"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
+    "fflate": "^0.8.3",
+    "parse5": "^8.0.1",
+    "pg": "^8.23.0",
+    "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "@netlify/zip-it-and-ship-it": "^16.0.0",
+    "esbuild": "^0.28.2"
+  }
+}
