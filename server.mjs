@@ -13,6 +13,7 @@ import { previewImport, applyImport } from './lib/import.mjs';
 import { connectDatabase } from './lib/database.mjs';
 import { memberView, listMembers, listTeams } from './lib/member-views.mjs';
 import { exportMembers } from './lib/member-export.mjs';
+import { readSchedule } from './lib/schedule.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicRoot = resolve(root, 'public');
@@ -189,17 +190,6 @@ async function saveEvent(body, actor, id = null) {
   return eventView(await db.prepare(`${eventSelect} WHERE e.id=?`).get(id), actor);
 }
 async function getBooking(id, member) { const row = (await db.prepare(`${bookingSelect} WHERE b.id=?`).get(id)); return row ? (await bookingView(row, member)) : null; }
-async function usageFor(memberId, week) {
-  const until = addDays(week, 7);
-  const [personal, teams] = await Promise.all([
-    db.prepare(`SELECT COALESCE(SUM(end_min-start_min),0)/60.0 AS hours FROM bookings
-      WHERE type='personal' AND member_id=? AND date>=? AND date<?`).get(memberId, week, until),
-    db.prepare(`SELECT t.id AS teamId,t.name AS teamName,COALESCE(SUM(b.end_min-b.start_min),0)/60.0 AS hours
-      FROM teams t LEFT JOIN bookings b ON b.team_id=t.id AND b.type='team' AND b.date>=? AND b.date<?
-      WHERE t.id IN (SELECT team_id FROM team_members WHERE member_id=?) GROUP BY t.id,t.name ORDER BY t.name`).all(week, until, memberId),
-  ]);
-  return {personalHours:personal.hours, teams};
-}
 async function createBooking(body,member,req) {
   return transaction(async()=>{
     member=(await requireMember(req)).member;
@@ -394,19 +384,15 @@ async function api(req, res, url) {
     return send(res, 200, { members: await db.prepare('SELECT id,name FROM members ORDER BY name,id').all() });
   }
   if (path === '/api/teams' && method === 'GET') return send(res, 200, { teams: (await teamList()) });
-  if (path === '/api/bookings' && method === 'GET') {
+  if (['/api/bookings','/api/schedule'].includes(path) && method === 'GET') {
     const date = url.searchParams.get('week') || seoulNow().date;
     if (!validDate(date)) fail(400, '날짜를 확인해 주세요.');
     const week = sunday(date);
-    const [rows, settings, usage, events] = await Promise.all([
-      db.prepare(`${bookingSelect} WHERE b.date>=? AND b.date<? ORDER BY b.date,b.start_min`).all(week, addDays(week, 7)),
-      getSettings(db), usageFor(member.id, week),
-      db.prepare(`${eventSelect} WHERE e.date>=? AND e.date<? ORDER BY e.date,e.start_min`).all(week, addDays(week, 7)),
-    ]);
+    const {rows, settings, usage, events, ...options} = await readSchedule(db, member, week, addDays(week, 7), path === '/api/schedule');
     const context = {now:seoulNow(), settings, teamIds:new Set(usage.teams.map(t=>t.teamId))};
     const bookings = [...await Promise.all(rows.map(row => bookingView(row, member, context))), ...events.map(row => eventView(row, member))];
     bookings.sort((a,b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
-    return send(res, 200, { bookings, week, settings, usage });
+    return send(res, 200, { bookings, week, settings, usage, ...options });
   }
   const eventMatch = path.match(/^\/api\/events\/(\d+)$/);
   if ((path === '/api/events' && method === 'POST') || (eventMatch && ['PUT', 'DELETE'].includes(method))) {
