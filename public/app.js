@@ -35,7 +35,7 @@ function shell(){const admin=!!S.me.admin;$('#app').innerHTML=`<div class="shell
 function pageHead(eyebrow,title,desc,actions=''){return `<div class="page-head"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${desc}</p></div>${actions?`<div class="head-actions">${actions}</div>`:''}</div>`}
 function stat(label,value,unit,ic,accent=false){return `<div class="stat"><div><div class="stat-label">${label}</div><div class="stat-value">${value}<span>${unit}</span></div></div><div class="stat-icon ${accent?'accent':''}">${icon(ic)}</div></div>`}
 function renderRoute(route,data){Object.assign(S,data);if(route==='members')renderMembers();else if(route==='schedule')renderSchedule();else if(route==='guide')renderGuide();else if(route==='settings')renderSettings();else renderPosts()}
-async function navigate(){
+async function navigate(initial=null){
   if(!S.me)return;
   const request=++S.request;
   let route=location.hash.slice(1).split('/')[0]||(S.me.admin?'members':'schedule');
@@ -51,7 +51,8 @@ async function navigate(){
   const indicator=setTimeout(()=>{if(request===S.request&&$('#route-sync'))$('#route-sync').hidden=false},350);
   try{
     let data;
-    if(route==='members'){const [m,t]=await Promise.all([api('/members'),api('/teams')]);data={members:m.members,teams:t.teams}}
+    if(initial?.key===key)data=initial.data;
+    else if(route==='members'){const [m,t]=await Promise.all([api('/members'),api('/teams')]);data={members:m.members,teams:t.teams}}
     else if(route==='schedule'){const b=await api('/schedule?week='+week);data={bookingData:b,bookings:b.bookings,teams:b.teams}}
     else if(route==='guide')data={guideSections:(await api('/admin-guide')).sections};
     else if(route==='settings')data={settings:(await api('/settings')).settings};
@@ -112,7 +113,7 @@ function renderPosts(){const wiki=S.route==='wiki';$('#main').innerHTML=pageHead
 function postCards(posts){return posts.length?`<div class="posts-grid">${posts.sort((a,b)=>Number(b.pinned)-Number(a.pinned)||b.id-a.id).map(p=>`<button class="post-card" data-action="read-post" data-id="${p.id}"><span class="tag ${p.pinned?'orange':''}">${p.pinned?'중요 · ':''}${esc(p.category||'일반')}</span><h3>${esc(p.title)}</h3><p>${esc(p.body)}</p><footer>${esc(p.authorName)} · ${postDate(p.updatedAt||p.createdAt)}</footer></button>`).join('')}</div>`:`<section class="panel">${empty(S.route==='wiki'?'첫 번째 문서를 기다리고 있어요':'아직 등록된 공지가 없어요',S.me.admin?(S.route==='wiki'?'합주실 이용법이나 장비 사용법을 남겨 보세요.':'멤버들에게 전할 첫 소식을 작성해 보세요.'):'새로운 내용이 등록되면 이곳에서 확인할 수 있어요.',S.route==='wiki'?'book-open':'megaphone',S.me.admin?button('작성하기','new-post','primary','plus'):'')}</section>`}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!S.me?.mustChangePassword)closeModal();if(e.key==='Tab'&&$('.modal')){const focusable=$$('button:not([disabled]),input:not([disabled]),select,textarea,a[href]',$('.modal')).filter(el=>el.offsetParent!==null);if(!focusable.length)return;const first=focusable[0],last=focusable.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
 window.addEventListener('hashchange',()=>{if(S.me&&!S.me.mustChangePassword)navigate()});
-async function boot(){try{const status=await api('/status');S.setupTokenRequired=status.setupTokenRequired;if(status.setupRequired){authScreen(true);return}try{S.me=(await api('/me')).member}catch{authScreen();return}await navigate();if(S.me.mustChangePassword||S.me.must_change_password)passwordScreen()}catch(e){$('#app').innerHTML=`<div class="loading-screen" style="font-size:20px">연결을 확인해 주세요<span>${esc(e.message)}</span><button class="btn" data-action="reload-page" style="margin-top:20px">다시 시도</button></div>`}}
+async function boot(){try{const result=await api('/bootstrap?'+new URLSearchParams({route:location.hash.slice(1).split('/')[0],week:S.week}));S.setupTokenRequired=result.setupTokenRequired;if(result.setupRequired){authScreen(true);return}S.me=result.member;if(!S.me){authScreen();return}await navigate(result.initial);if(S.me.mustChangePassword||S.me.must_change_password)passwordScreen()}catch(e){$('#app').innerHTML=`<div class="loading-screen" style="font-size:20px">연결을 확인해 주세요<span>${esc(e.message)}</span><button class="btn" data-action="reload-page" style="margin-top:20px">다시 시도</button></div>`}}
 boot();
 
 matchMedia('(max-width:600px)').addEventListener('change',()=>{if(S.me&&S.route==='schedule'&&S.bookingData)renderSchedule()});

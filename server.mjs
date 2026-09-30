@@ -271,6 +271,17 @@ async function storePreview(workbook, session) {
   }
   return { token, preview };
 }
+async function scheduleData(member, dateValue, includeOptions = true) {
+    const date = dateValue || seoulNow().date;
+    if (!validDate(date)) fail(400, '날짜를 확인해 주세요.');
+    const week = sunday(date);
+    const {rows, settings, usage, events, ...options} = await readSchedule(db, member, week, addDays(week, 7), includeOptions);
+    const context = {now:seoulNow(), settings, teamIds:new Set(usage.teams.map(t=>t.teamId))};
+    const bookings = [...await Promise.all(rows.map(row => bookingView(row, member, context))), ...events.map(row => eventView(row, member))];
+    bookings.sort((a,b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+    return { bookings, week, settings, usage, ...options };
+}
+
 async function api(req, res, url) {
   const path = url.pathname; const method = req.method;
   if (path === '/api/logout' && method === 'POST') {
@@ -283,7 +294,33 @@ async function api(req, res, url) {
     }
     return send(res, 200, { ok: true });
   }
-  await cleanExpired();
+  // Expiry is enforced in session/upload/rate queries. Reclaim storage on writes,
+  // so a read-only first visit never waits for maintenance DELETEs.
+  if (!['GET','HEAD'].includes(method)) await cleanExpired();
+  if (path === '/api/bootstrap' && method === 'GET') {
+    const session = await sessionFrom(req);
+    if (!session) return send(res, 200, {member:null,
+      setupRequired:!(await db.prepare('SELECT 1 FROM members LIMIT 1').get()),
+      setupTokenRequired:Boolean(process.env.SETUP_TOKEN)});
+    const member = session.member;
+    // Forced password changes must never expose calendar or management data.
+    if (member.must_change_password) return send(res, 200, {member:memberView(member,[]),setupRequired:false});
+    let route = url.searchParams.get('route') || (member.admin ? 'members' : 'schedule');
+    if (!['schedule','members','settings','guide','notice','wiki'].includes(route) ||
+        (!member.admin && ['members','settings','guide'].includes(route))) route='schedule';
+    let initial, view;
+    if (route === 'schedule') {
+      const b = await scheduleData(member,url.searchParams.get('week'));
+      const memberships = b.teams.flatMap(t=>t.members.filter(m=>m.id===member.id).map(m=>({id:t.id,name:t.name,slot:m.slot})));
+      view=memberView(member,memberships);
+      initial={key:'schedule:'+b.week,data:{bookingData:b,bookings:b.bookings,teams:b.teams}};
+    } else if (route === 'members') {
+      const [members,teams]=await Promise.all([listMembers(db),teamList()]);
+      view=members.find(m=>m.id===member.id);
+      initial={key:'members',data:{members,teams}};
+    } else view=await safeMember(member);
+    return send(res,200,{member:view,setupRequired:false,initial});
+  }
   if (path === '/api/status' && method === 'GET') return send(res, 200, { service:'mooboong', storage:db.dialect, setupRequired: !(await db.prepare('SELECT 1 FROM members LIMIT 1').get()), setupTokenRequired:Boolean(process.env.SETUP_TOKEN) });
   if (path === '/api/setup' && method === 'POST') {
     if ((await db.prepare('SELECT 1 FROM members LIMIT 1').get())) fail(409, '이미 초기 설정이 완료되었습니다. 로그인해 주세요.');
@@ -385,14 +422,7 @@ async function api(req, res, url) {
   }
   if (path === '/api/teams' && method === 'GET') return send(res, 200, { teams: (await teamList()) });
   if (['/api/bookings','/api/schedule'].includes(path) && method === 'GET') {
-    const date = url.searchParams.get('week') || seoulNow().date;
-    if (!validDate(date)) fail(400, '날짜를 확인해 주세요.');
-    const week = sunday(date);
-    const {rows, settings, usage, events, ...options} = await readSchedule(db, member, week, addDays(week, 7), path === '/api/schedule');
-    const context = {now:seoulNow(), settings, teamIds:new Set(usage.teams.map(t=>t.teamId))};
-    const bookings = [...await Promise.all(rows.map(row => bookingView(row, member, context))), ...events.map(row => eventView(row, member))];
-    bookings.sort((a,b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
-    return send(res, 200, { bookings, week, settings, usage, ...options });
+    return send(res, 200, await scheduleData(member, url.searchParams.get('week'), path === '/api/schedule'));
   }
   const eventMatch = path.match(/^\/api\/events\/(\d+)$/);
   if ((path === '/api/events' && method === 'POST') || (eventMatch && ['PUT', 'DELETE'].includes(method))) {

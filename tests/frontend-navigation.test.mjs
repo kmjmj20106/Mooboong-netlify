@@ -49,3 +49,43 @@ test('cached navigation paints before network, preserves unchanged view and igno
   await second;
   assert.equal(nodes['#main'].innerHTML,'login');assert.equal(state.cache.size,0);
 });
+
+test('schedule navigation obtains timetable, teams and admin booking options in one request',async()=>{
+  const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+  const code=source.slice(source.indexOf('function renderRoute('),source.indexOf('\nfunction renderMembers('));
+  const nodes={'#main':{innerHTML:''},'#route-sync':{hidden:true}};
+  const payload={bookings:[],teams:[{id:1,name:'밴드',members:[]}],bookingMembers:[{id:'admin',name:'운영진'}],settings:{},usage:{personalHours:0,teams:[]}};
+  const state={me:{id:'admin',admin:true},request:0,week:'2026-09-27',cache:new Map()};
+  const calls=[];let paints=0;
+  const context=vm.createContext({S:state,location:{hash:'#schedule'},names:{schedule:'예약'},$:s=>nodes[s],setTimeout,clearTimeout,
+    shell(){},renderSchedule(){paints++},api:async path=>{calls.push(path);return payload},renderMembers(){},renderGuide(){},renderSettings(){},renderPosts(){},refreshMemberTable(){},toast(){},esc:String,button(){return ''},
+  });
+  vm.runInContext(code,context);
+  await vm.runInContext('navigate()',context);
+  assert.deepEqual(calls,['/schedule?week=2026-09-27']);assert.equal(paints,1);
+  assert.equal(state.bookingData,payload);assert.equal(state.teams,payload.teams);
+});
+
+test('admin booking dialog opens immediately using calendar options without another member request',async()=>{
+  const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+  const code=source.slice(source.indexOf('async function bookingModal('),source.indexOf('\nfunction readPost('));
+  let shown=false,preview=false;const calls=[];
+  const context=vm.createContext({S:{me:{id:'admin',admin:true},teams:[],bookingData:{settings:{},bookingMembers:[{id:'admin',name:'운영진'}]}},
+    today:()=> '2026-09-29',addDays:()=> '2027-09-30',api:path=>{calls.push(path);return new Promise(()=>{})},
+    showModal(){shown=true},updateBookingPreview(){preview=true},select:()=>'',field:()=>'',button:()=>'',icon:()=>'',esc:String,
+  });
+  vm.runInContext(code,context);
+  const pending=vm.runInContext('bookingModal()',context);
+  assert.equal(shown,true);assert.equal(preview,true);assert.deepEqual(calls,[]);await pending;
+});
+
+test('bootstrap data paints the first calendar without fetching it again',async()=>{
+  const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+  const code=source.slice(source.indexOf('function renderRoute('),source.indexOf('\nfunction renderMembers('));
+  const nodes={'#main':{innerHTML:''},'#route-sync':{hidden:true}};
+  const data={bookingData:{settings:{},usage:{}},bookings:[],teams:[]};let paints=0;
+  const context=vm.createContext({S:{me:{admin:true},request:0,week:'2026-09-27',cache:new Map()},initial:{key:'schedule:2026-09-27',data},location:{hash:'#schedule'},names:{schedule:'예약'},$:s=>nodes[s],setTimeout,clearTimeout,
+    shell(){},renderSchedule(){paints++},api(){throw Error('unnecessary first-screen fetch')},renderMembers(){},renderGuide(){},renderSettings(){},renderPosts(){},refreshMemberTable(){},toast(){},esc:String,button(){return ''},
+  });
+  vm.runInContext(code,context);await vm.runInContext('navigate(initial)',context);assert.equal(paints,1);
+});
