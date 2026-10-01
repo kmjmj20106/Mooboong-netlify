@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { seedGuides } from './lib/guides.mjs';
-import { contentRoutes, sourceUrl } from './lib/content.mjs';
+import { contentRoutes, sourceUrl, notionEmbedUrl } from './lib/content.mjs';
 import { readFile, stat, realpath } from 'node:fs/promises';
 import { dirname, resolve, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -157,7 +157,7 @@ async function bookingView(row, member, context = null) {
   const upcoming = row.date > now.date || (row.date === now.date && row.start_min > now.minute && !(context?.settings || await getSettings(db)).blockSameDayCancellation);
   return {
     id: row.id, date: row.date, start: toTime(row.start_min), end: toTime(row.end_min), type: row.type,
-    createdBy:row.created_by || row.member_id, createdByName:row.creator_name || row.member_name, seriesId:row.series_id, recurrenceEnd:row.recurrence_end, memberId: row.member_id, memberName: row.member_name, teamId: row.team_id, teamName: row.team_name,
+    displayName:row.display_name || '', reservationName:row.display_name || row.creator_name || row.member_name, createdBy:row.created_by || row.member_id, createdByName:row.creator_name || row.member_name, seriesId:row.series_id, recurrenceEnd:row.recurrence_end, memberId: row.member_id, memberName: row.member_name, teamId: row.team_id, teamName: row.team_name,
     canCancel: Boolean(member.admin || (upcoming && (row.member_id === member.id || (row.team_id && (context ? context.teamIds.has(row.team_id) : await db.prepare('SELECT 1 FROM team_members WHERE team_id=? AND member_id=?').get(row.team_id, member.id)))))),
   };
 }
@@ -253,14 +253,16 @@ async function createBooking(body,member,req) {
 async function postView(row, attachments = null) {
   return { id: row.id, kind: row.kind, title: row.title, body: row.body, category: row.category,
     pinned: Boolean(row.pinned), authorId: row.author_id, authorName: row.author_name,
-    sourceUrl:row.source_url, hasDocument:Boolean(row.has_document ?? row.document_html), attachments:attachments ?? (await db.prepare('SELECT id,name,length(content) AS size FROM attachments WHERE post_id=?').all(row.id)), createdAt: row.created_at, updatedAt: row.updated_at };
+    sourceUrl:row.source_url, embedUrl:notionEmbedUrl(row.source_url), hasDocument:Boolean(row.has_document ?? row.document_html), attachments:attachments ?? (await db.prepare('SELECT id,name,length(content) AS size FROM attachments WHERE post_id=?').all(row.id)), createdAt: row.created_at, updatedAt: row.updated_at };
 }
 const postSelect = `SELECT p.id,p.kind,p.title,p.body,p.category,p.pinned,p.author_id,p.created_at,p.updated_at,p.source_url,CASE WHEN length(p.document_html)>0 THEN 1 ELSE 0 END AS has_document,m.name AS author_name FROM posts p JOIN members m ON m.id=p.author_id`;
 function validatePost(body) {
   if (!['notice', 'wiki'].includes(body.kind)) fail(400, '공지 또는 위키를 선택해 주세요.');
   if (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 150) fail(400, '제목은 1~150자로 입력해 주세요.');
+  const url=sourceUrl(body.sourceUrl);
+  if(notionEmbedUrl(url) && (body.body == null || (typeof body.body === 'string' && !body.body.trim())))body.body='노션 페이지';
   if (typeof body.body !== 'string' || !body.body.trim() || body.body.length > 30000) fail(400, '내용은 1~30,000자로 입력해 주세요.');
-  return [body.kind, body.title.trim(), body.body.trim(), cleanText(body.category, 50), body.pinned === true ? 1 : 0, sourceUrl(body.sourceUrl)];
+  return [body.kind, body.title.trim(), body.body.trim(), cleanText(body.category, 50), body.pinned === true ? 1 : 0, url];
 }
 async function storePreview(workbook, session) {
   const preview = (await previewImport(db, workbook, session.member.id));
@@ -442,6 +444,21 @@ async function api(req, res, url) {
     return send(res, method === 'POST' ? 201 : 200, result);
   }
   if (path === '/api/bookings' && method === 'POST') return send(res, 201, (await createBooking(await jsonBody(req), member, req)));
+  const nameMatch=path.match(/^\/api\/bookings\/(\d+)\/name$/);
+  if (nameMatch && method === 'PATCH') {
+    const body=await jsonBody(req);
+    if(typeof body.name!=='string'||body.name.trim().length>100)fail(400,'표시할 이름은 100자 이내로 입력해 주세요.');
+    const id=Number(nameMatch[1]);
+    await transaction(async()=>{
+      const actor=(await requireMember(req,{admin:true})).member;
+      const before=await db.prepare('SELECT display_name FROM bookings WHERE id=?').get(id);
+      if(!before)fail(404,'예약을 찾을 수 없습니다.');
+      const name=body.name.trim();
+      await db.prepare('UPDATE bookings SET display_name=? WHERE id=?').run(name,id);
+      await audit(db,actor.id,'booking.rename',{bookingId:id,previousName:before.display_name,name});
+    });
+    return send(res,200,{booking:await getBooking(id,member)});
+  }
   const seriesMatch = path.match(/^\/api\/bookings\/(\d+)\/series$/);
   if (seriesMatch && ['GET', 'DELETE'].includes(method)) {
     const loadSeries = async viewer => {
@@ -487,6 +504,16 @@ async function api(req, res, url) {
     return send(res, 200, { posts: await Promise.all(rows.map(row=>postView(row,byPost.get(row.id)||[]))) });
   }
   const postMatch = path.match(/^\/api\/posts\/(\d+)$/);
+  if (postMatch && method === 'DELETE') {
+    await transaction(async()=>{
+      const actor=(await requireMember(req,{admin:true})).member;
+      const id=Number(postMatch[1]);
+      const post=await db.prepare('SELECT system_key FROM posts WHERE id=?').get(id);
+      if (!(await db.prepare('DELETE FROM posts WHERE id=?').run(id)).changes) fail(404,'게시물을 찾을 수 없습니다.');
+      await audit(db,actor.id,'post.delete',{postId:id,systemKey:post?.system_key});
+    });
+    return send(res,200,{ok:true});
+  }
   if ((path === '/api/posts' && method === 'POST') || (postMatch && method === 'PUT')) {
     (await requireMember(req, { admin: true }));
     const values = validatePost(await jsonBody(req));
@@ -574,7 +601,7 @@ export async function handleRequest(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self' https://*.notion.site; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   try {
     await initializeApp();
     if (!(appOrigin ? [new URL(appOrigin).host,`127.0.0.1:${port}`,`localhost:${port}`] : [`127.0.0.1:${port}`, `localhost:${port}`]).includes(req.headers.host)) fail(403, '로컬 주소로 접속해 주세요.');

@@ -97,6 +97,21 @@ test('Netlify deployment bundle: independent workers share imports, uploads, ses
     const regular=await b.request('/api/bootstrap?route=members&week='+date,{cookie:memberCookie});
     assert.ok(regular.body.initial.key.startsWith('schedule:'));assert.equal(regular.body.initial.data.members,undefined);
     assert.deepEqual(regular.body.initial.data.bookingData.bookingMembers,[]);
+    const bookingId=concurrent.find(r=>r.status===201).body.booking.id;
+    assert.equal((await a.request(`/api/bookings/${bookingId}/name`,{method:'PATCH',cookie:memberCookie,body:{name:'변경 시도'}})).status,403);
+    const renamed=await b.request(`/api/bookings/${bookingId}/name`,{method:'PATCH',cookie,body:{name:'게스트 합주'}});
+    assert.equal(renamed.status,200,JSON.stringify(renamed.body));assert.equal(renamed.body.booking.reservationName,'게스트 합주');
+    assert.equal(renamed.body.booking.createdBy,'admin');assert.equal(renamed.body.booking.memberId,'admin');
+    const afterName=await a.request('/api/schedule?week='+date,{cookie});assert.deepEqual(afterName.body.usage,schedule.body.usage);
+    const nameRow=(await engine.query('SELECT member_id,team_id,created_by,display_name FROM mooboong.bookings WHERE id=$1',[bookingId])).rows[0];
+    assert.equal(nameRow.display_name,'게스트 합주');assert.equal(nameRow.created_by,'admin');assert.equal(nameRow.team_id,null);
+    assert.equal((await a.request(`/api/bookings/${bookingId}/name`,{method:'PATCH',cookie,body:{name:'x'.repeat(101)}})).status,400);
+    const resetName=await a.request(`/api/bookings/${bookingId}/name`,{method:'PATCH',cookie,body:{name:''}});assert.equal(resetName.body.booking.reservationName,'운영진');
+    const notionLink=await a.request('/api/posts',{method:'POST',cookie,body:{kind:'notice',title:'노션 원본',body:'',sourceUrl:'https://bubble-knife-53b.notion.site/Flow8-1357c1da089c43898a054f246ada19a2?pvs=74'}});
+    assert.equal(notionLink.status,201,JSON.stringify(notionLink.body));assert.match(notionLink.body.post.embedUrl,/\/ebd\/1357c1da089c43898a054f246ada19a2/);
+    assert.equal((await b.request('/api/posts/'+notionLink.body.post.id,{method:'DELETE',cookie:memberCookie})).status,403);
+    assert.equal((await a.request('/api/posts/'+notionLink.body.post.id,{method:'DELETE',cookie})).status,200);
+    assert.equal((await a.request('/api/posts/'+notionLink.body.post.id,{method:'DELETE',cookie})).status,404);
     await engine.query("UPDATE mooboong.sessions SET expires_at=0 WHERE member_id='member'");
     const expired=await b.request('/api/bootstrap?route=schedule',{cookie:memberCookie});
     assert.equal(expired.body.member,null);assert.equal(expired.body.initial,undefined);
@@ -109,6 +124,8 @@ test('Netlify deployment bundle: independent workers share imports, uploads, ses
     for(let offset=0;offset<large.length;offset+=1024*1024){const r=await workers[(offset/(1024*1024))%2].request(`/api/uploads/${upload.body.token}/${offset/(1024*1024)}`,{method:'PUT',cookie,raw:large.subarray(offset,offset+1024*1024)});assert.equal(r.status,200,JSON.stringify(r.body));}
     const attached=await b.request(attachmentPath,{method:'POST',cookie,headers:{'X-Upload-Token':upload.body.token,'X-Filename':'large.zip'}});assert.equal(attached.status,201,JSON.stringify(attached.body));
     const download=await a.request('/api/attachments/'+attached.body.attachment.id,{cookie});assert.equal(download.status,200);assert.deepEqual(download.bytes,large);
+    assert.equal((await a.request('/api/posts/'+post.body.post.id,{method:'DELETE',cookie})).status,200);
+    assert.equal((await a.request('/api/attachments/'+attached.body.attachment.id,{cookie})).status,404);
     const notion=await b.request('/api/wiki/import',{method:'POST',cookie,raw:Buffer.from('<html><title>Flow8</title><article><h1>안내</h1><script>alert(1)</script></article></html>')});assert.equal(notion.status,201,JSON.stringify(notion.body));
     const doc=await a.request(`/api/posts/${notion.body.id}/document`,{cookie});assert.equal(doc.status,200);assert.ok(!doc.bytes.toString().includes('<script'));assert.match(doc.headers['content-security-policy'],/script-src 'none'/);
     // Limits survive alternation between instances; IP comes from context.

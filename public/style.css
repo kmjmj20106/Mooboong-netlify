@@ -24,3 +24,5 @@
 
 .top-logout{white-space:nowrap;flex-shrink:0}.route-sync{position:fixed;right:22px;top:82px;z-index:35;padding:6px 10px;background:#eeeff8;border-radius:20px;color:#575b76;font-size:11px}.route-sync[hidden]{display:none}.booking-block .booking-creator{font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}.booking-block{overflow:hidden}.modal-actions{flex-wrap:wrap}
 @media(max-width:600px){.top-meta .tag{display:none}.top-logout{font-size:11px;padding:6px 8px}.top-logout svg{display:none}.route-sync{top:68px;right:12px}.calendar:not(.zoom) .booking-block .booking-creator{display:block;font-size:8px;line-height:11px}.preview-grid .booking-creator{font-size:8px}}
+
+#calendar-popup{z-index:1200}#calendar-popup .booking-calendar{max-height:65vh}.calendar-preview-button{margin-bottom:20px}

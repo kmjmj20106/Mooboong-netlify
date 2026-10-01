@@ -97,3 +97,5 @@ REVOKE ALL ON ALL TABLES IN SCHEMA mooboong FROM PUBLIC;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES members(id);
 CREATE INDEX IF NOT EXISTS bookings_series_id ON bookings(series_id);
 CREATE INDEX IF NOT EXISTS attachments_post_id ON attachments(post_id);
+
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';

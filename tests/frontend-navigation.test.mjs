@@ -76,7 +76,7 @@ test('admin booking dialog opens immediately using calendar options without anot
   });
   vm.runInContext(code,context);
   const pending=vm.runInContext('bookingModal()',context);
-  assert.equal(shown,true);assert.equal(preview,true);assert.deepEqual(calls,[]);await pending;
+  assert.equal(shown,true);assert.equal(preview,false);assert.deepEqual(calls,[]);await pending;
 });
 
 test('bootstrap data paints the first calendar without fetching it again',async()=>{
