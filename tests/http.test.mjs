@@ -352,12 +352,12 @@ test('real HTTP: setup, XLSX import, access control, booking rules and persisten
     assert.equal((await member(attachmentPath)).body,'notice attachment');
     // Admin resets never disclose stored passwords; revoke every target session.
     const resetPath='/api/members/password-reset';
-    const resetBody={memberId:'test-user',newPassword:'TemporaryPassword123!',operatorPassword:'AdminPassword123!'};
+    const resetBody={memberId:'test-user',newPassword:'1234',operatorPassword:'AdminPassword123!'};
     assert.equal((await guest(resetPath,'POST',resetBody)).status,401);
     assert.equal((await member(resetPath,'POST',resetBody)).status,403);
     assert.equal((await admin(resetPath,'POST',{...resetBody,operatorPassword:'wrong'})).status,403);
     assert.equal((await member('/api/me')).status,200,'failed reset preserves target session');
-    assert.equal((await admin(resetPath,'POST',{...resetBody,newPassword:'short'})).status,400);
+    assert.equal((await admin(resetPath,'POST',{...resetBody,newPassword:'123'})).status,400);
     assert.equal((await admin(resetPath,'POST',{...resetBody,memberId:'missing'})).status,404);
     assert.equal((await admin(resetPath,'POST',{...resetBody,memberId:'admin'})).status,400);
     assert.equal((await admin(resetPath,'POST',resetBody,{Origin:'https://foreign.invalid'})).status,403);
@@ -373,7 +373,7 @@ test('real HTTP: setup, XLSX import, access control, booking rules and persisten
     assert.equal(temporaryLogin.status,200);
     assert.equal(temporaryLogin.body.member.mustChangePassword,true);
     assert.equal((await member('/api/bookings')).status,403);
-    assert.equal((await member('/api/password','POST',{currentPassword:resetBody.newPassword,newPassword:'FinalMemberPassword123!'})).status,200);
+    assert.equal((await member('/api/password','POST',{currentPassword:resetBody.newPassword,newPassword:'5678'})).status,200);
     assert.equal((await member('/api/bookings')).status,200);
     const safeList=await admin('/api/members');
     assert.ok(!JSON.stringify(safeList.body).includes('password_hash'));

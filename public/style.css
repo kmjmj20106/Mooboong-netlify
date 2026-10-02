@@ -26,3 +26,5 @@
 @media(max-width:600px){.top-meta .tag{display:none}.top-logout{font-size:11px;padding:6px 8px}.top-logout svg{display:none}.route-sync{top:68px;right:12px}.calendar:not(.zoom) .booking-block .booking-creator{display:block;font-size:8px;line-height:11px}.preview-grid .booking-creator{font-size:8px}}
 
 #calendar-popup{z-index:1200}#calendar-popup .booking-calendar{max-height:65vh}.calendar-preview-button{margin-bottom:20px}
+
+.password-visibility{margin:0 0 18px}.article.document-article{padding:20px;max-width:none}.wiki-document.notion-live{display:block;height:90vh;min-height:720px;margin:20px 0 0;border:0;border-radius:0}@media(max-width:700px){.article.document-article{padding:10px}.wiki-document.notion-live{height:90dvh;min-height:600px;margin-top:16px}}

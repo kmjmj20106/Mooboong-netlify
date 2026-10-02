@@ -331,7 +331,7 @@ async function api(req, res, url) {
     if(process.env.SETUP_TOKEN && body.setupToken !== process.env.SETUP_TOKEN)fail(403,'초기 설정 키를 확인해 주세요.');
     if(appOrigin && !process.env.SETUP_TOKEN)fail(503,'공개 운영의 초기 설정 키가 필요합니다.');
     const id = cleanText(body.id, 100).normalize('NFC'), name = cleanText(body.name, 100).normalize('NFC');
-    if (!id || !name || typeof body.password !== 'string' || body.password.length < 8 || body.password.length > 128 || body.password === '20000000') fail(400, '이름·아이디와 기본값이 아닌 8~128자 비밀번호를 입력해 주세요.');
+    if (!id || !name || typeof body.password !== 'string' || body.password.length < 4 || body.password.length > 128 || body.password === '20000000') fail(400, '이름·아이디와 기본값이 아닌 4~128자 비밀번호를 입력해 주세요.');
     (await transaction(async () => {
       if ((await db.prepare('SELECT 1 FROM members LIMIT 1').get())) fail(409, '이미 초기 설정이 완료되었습니다. 로그인해 주세요.');
       (await db.prepare('INSERT INTO members(id,name,password_hash,admin,must_change_password) VALUES (?,?,?,1,0)').run(id, name, hashPassword(body.password)));
@@ -354,7 +354,7 @@ async function api(req, res, url) {
   if (path === '/api/me' && method === 'GET') return send(res, 200, { member: (await safeMember((await requireMember(req, { allowPasswordChange: true })).member)) });
   if (path === '/api/password' && method === 'POST') {
     const session = (await requireMember(req, { allowPasswordChange: true })); const body = await jsonBody(req);
-    if (typeof body.newPassword !== 'string' || body.newPassword.length < 8 || body.newPassword.length > 128 || body.newPassword === body.currentPassword || body.newPassword === '20000000') fail(400, '기본값·기존 비밀번호와 다른 8~128자 비밀번호를 입력해 주세요.');
+    if (typeof body.newPassword !== 'string' || body.newPassword.length < 4 || body.newPassword.length > 128 || body.newPassword === body.currentPassword || body.newPassword === '20000000') fail(400, '기본값·기존 비밀번호와 다른 4~128자 비밀번호를 입력해 주세요.');
     (await transaction(async () => {
       const fresh = await requireMember(req, { allowPasswordChange: true });
       if (typeof body.currentPassword !== 'string' || body.currentPassword.length > 128 || !verifyPassword(body.currentPassword, fresh.member.password_hash)) fail(400, '현재 비밀번호가 올바르지 않습니다.');
@@ -401,7 +401,7 @@ async function api(req, res, url) {
     const targetId = cleanText(body.memberId, 100).normalize('NFC');
     if (!targetId) fail(400, '멤버 아이디를 확인해 주세요.');
     if (targetId === operator.member.id) fail(400, '본인 비밀번호는 비밀번호 변경 메뉴에서 바꿔 주세요.');
-    if (typeof body.newPassword !== 'string' || body.newPassword.length < 8 || body.newPassword.length > 128 || !body.newPassword.trim()) fail(400, '임시 비밀번호는 8~128자로 입력해 주세요.');
+    if (typeof body.newPassword !== 'string' || body.newPassword.length < 4 || body.newPassword.length > 128 || !body.newPassword.trim()) fail(400, '임시 비밀번호는 4~128자로 입력해 주세요.');
     await checkLoginRate(req, operator.member.id);
     await transaction(async () => {
       const current = await requireMember(req, { admin: true });
