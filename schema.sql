@@ -99,3 +99,7 @@ CREATE INDEX IF NOT EXISTS bookings_series_id ON bookings(series_id);
 CREATE INDEX IF NOT EXISTS attachments_post_id ON attachments(post_id);
 
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE team_members DROP CONSTRAINT IF EXISTS team_members_slot_check;
+ALTER TABLE team_members ADD CONSTRAINT team_members_slot_check CHECK(slot IN ('vocal','guitar1','guitar2','bass','drums','keyboard') OR slot LIKE 'vocal:%' OR slot LIKE 'guitar1:%' OR slot LIKE 'guitar2:%' OR slot LIKE 'bass:%' OR slot LIKE 'drums:%' OR slot LIKE 'keyboard:%');
+CREATE INDEX IF NOT EXISTS audit_log_action_created ON audit_log(action,created_at);

@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+backups/
+*.sqlite
+*.sqlite-*
+*.db
+*.pem
+*.key
+.DS_Store
+__pycache__/
+*.pyc
+.netlify/

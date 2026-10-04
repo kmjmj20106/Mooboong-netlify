@@ -78,7 +78,7 @@ test('Netlify deployment bundle: independent workers share imports, uploads, ses
     assert.deepEqual(schedule.body.usage,weekly.body.usage);
     assert.equal(schedule.body.teams[0].id,teamId);
     assert.ok(schedule.body.bookingMembers.some(m=>m.id==='member'));
-    assert.ok(schedule.body.bookingMembers.every(m=>Object.keys(m).sort().join(',')==='id,name'));
+    assert.ok(schedule.body.bookingMembers.every(m=>Object.keys(m).sort().join(',')==='id,name,session'));
     assert.equal((await a.request('/api/schedule?week='+date)).status,401);
     const boot=await a.request('/api/bootstrap?route=schedule&week='+date,{cookie});
     assert.equal(boot.status,200,JSON.stringify(boot.body));

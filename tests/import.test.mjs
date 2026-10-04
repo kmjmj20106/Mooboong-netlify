@@ -23,7 +23,7 @@ test('new member defaults, vacant slots, multiple teams, and preview secret excl
   const workbook = { members:[member(), member({ 아이디:'두번째', 이름:'두번째멤버', 비밀번호:'unique-test-password-2026' })], teams:[team(), team({ 팀명:'두번째팀' })] };
   const before = (await previewImport(db, workbook, 'admin'));
   assert.equal(before.valid, true);
-  assert.deepEqual(before.summary, { newMembers:2,updatedMembers:0,newTeams:2,updatedTeams:0,totalMembers:2,totalTeams:2,errors:0,warnings:0 });
+  assert.deepEqual(before.summary, { newMembers:2,updatedMembers:0,newTeams:2,updatedTeams:0,unchangedMembers:0,unchangedTeams:0,totalMembers:2,totalTeams:2,errors:0,warnings:0 });
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM members').get().n, 1);
   assert.equal(JSON.stringify(before).includes('unique-test-password-2026'), false);
   assert.equal(JSON.stringify(before).includes('20000000'), false);

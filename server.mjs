@@ -1,3 +1,4 @@
+import {reservationPolicy,validatePolicies} from './lib/booking-policy.mjs';
 import http from 'node:http';
 import { seedGuides } from './lib/guides.mjs';
 import { contentRoutes, sourceUrl, notionEmbedUrl } from './lib/content.mjs';
@@ -205,7 +206,7 @@ async function createBooking(body,member,req) {
       if(typeof body.memberId!=='string'||!body.memberId.trim()||body.memberId.length>100)fail(400,'예약할 멤버를 선택해 주세요.');
       const ownerId=body.memberId.trim().normalize('NFC');
       if(!member.admin&&ownerId!==member.id)fail(403,'다른 멤버 대신 예약하는 기능은 운영진만 사용할 수 있습니다.');
-      ownerMember=await db.prepare('SELECT id FROM members WHERE id=?').get(ownerId);
+      ownerMember=await db.prepare('SELECT id,session FROM members WHERE id=?').get(ownerId);
       if(!ownerMember)fail(400,'예약할 멤버를 찾을 수 없습니다.');
     }
     let teamId=null;
@@ -225,12 +226,18 @@ async function createBooking(body,member,req) {
     }
     // Fetch the relevant range once, then validate every date under the DB lock.
     const from=sunday(date),until=addDays(sunday(dates.at(-1)),7);
-    const rows=await db.prepare('SELECT date,start_min,end_min,type,member_id,team_id FROM bookings WHERE date>=? AND date<?').all(from,until);
-    const events=await db.prepare('SELECT date,start_min,end_min FROM events WHERE date>=? AND date<?').all(from,until);
+    const [rows,events]=await Promise.all([
+      db.prepare('SELECT date,start_min,end_min,type,member_id,team_id FROM bookings WHERE date>=? AND date<?').all(from,until),
+      db.prepare('SELECT date,start_min,end_min FROM events WHERE date>=? AND date<?').all(from,until)
+    ]);
     const own=rows.filter(r=>r.type===type&&(type==='team'?r.team_id===teamId:r.member_id===ownerMember.id));
-    const limit=(type==='team'?settings.teamWeeklyHours:settings.personalWeeklyHours)*60;
+    const accepted=[],skipped=[];
     for(const day of dates){
+      const policy=reservationPolicy(settings,day,{memberId:ownerMember.id,teamId,type,session:ownerMember.session});
+      if(!policy.allowed)fail(403,`${day}: 특별 운영 기간에는 허용된 세션만 개인 연습을 예약할 수 있습니다.`);
+      const limit=policy.hours*60;
       const collision=r=>r.date===day&&r.start_min<end&&r.end_min>start;
+      if(body.skipConflicts===true && seriesId && (rows.some(collision)||events.some(collision))){skipped.push({date:day,reason:'기존 예약 또는 일정과 겹침'});continue;}
       if(rows.some(collision))fail(409,`${day}: 다른 예약과 시간이 겹칩니다. 빈 시간을 다시 선택해 주세요.`);
       if(events.some(collision))fail(409,`${day}: 커스텀 일정이 있는 시간입니다. 다른 시간을 선택해 주세요.`);
       const week=sunday(day),next=addDays(week,7);
@@ -239,14 +246,16 @@ async function createBooking(body,member,req) {
       let low=start,high=end,changed=true;
       while(changed){changed=false;for(const r of own.filter(r=>r.date===day))if(r.end_min>=low&&r.start_min<=high){const l=Math.min(low,r.start_min),h=Math.max(high,r.end_min);if(l!==low||h!==high){low=l;high=h;changed=true;}}}
       if(high-low>settings.maxContinuousHours*60)fail(400,`${day}: 연속 예약은 최대 ${settings.maxContinuousHours}시간입니다. 이어지는 예약도 포함됩니다.`);
+      accepted.push(day);
     }
-    const values=dates.flatMap(day=>[ownerMember.id,teamId,type,day,start,end,seriesId,body.repeatUntil||null,member.id]);
-    const inserted=await db.prepare('INSERT INTO bookings(member_id,team_id,type,date,start_min,end_min,series_id,recurrence_end,created_by) VALUES '+dates.map(()=>'(?,?,?,?,?,?,?,?,?)').join(',')+' RETURNING id').all(...values);
-    await db.prepare('INSERT INTO audit_log(actor_id,action,details) VALUES '+inserted.map(()=>'(?,?,?)').join(',')).run(...inserted.flatMap(r=>[member.id,'booking.create',JSON.stringify({bookingId:r.id,memberId:ownerMember.id,teamId})]));
+    if(!accepted.length)fail(409,'모든 날짜가 기존 일정과 겹칩니다. 다른 시간을 선택해 주세요.');
+    const values=accepted.flatMap(day=>[ownerMember.id,teamId,type,day,start,end,seriesId,body.repeatUntil||null,member.id]);
+    const inserted=await db.prepare('INSERT INTO bookings(member_id,team_id,type,date,start_min,end_min,series_id,recurrence_end,created_by) VALUES '+accepted.map(()=>'(?,?,?,?,?,?,?,?,?)').join(',')+' RETURNING id').all(...values);
+    await db.prepare('INSERT INTO audit_log(actor_id,action,details) VALUES '+inserted.map(()=>'(?,?,?)').join(',')).run(...inserted.flatMap(r=>[member.id,'booking.create',JSON.stringify({bookingId:r.id,memberId:ownerMember.id,teamId,date:accepted[inserted.indexOf(r)],start:body.start,end:body.end,type,seriesId})]));
     const saved=await db.prepare(`${bookingSelect} WHERE b.id IN (${inserted.map(()=>'?').join(',')}) ORDER BY b.date,b.start_min`).all(...inserted.map(r=>r.id));
     const context={now,settings,teamIds:new Set(teamId===null?[]:[teamId])};
     const bookings=await Promise.all(saved.map(row=>bookingView(row,member,context)));
-    return {booking:bookings[0],bookings,count:bookings.length};
+    return {booking:bookings[0],bookings,count:bookings.length,skipped};
   });
 }
 
@@ -381,6 +390,57 @@ async function api(req, res, url) {
     return send(res,200,{ok:true});
   }
   if(await contentRoutes(req,res,url,db,member,{readBody,send,fail,transaction}))return;
+  if(path==='/api/feedback'&&method==='POST'){
+    const body=await jsonBody(req),message=cleanText(body.message,2000);
+    if(!message)fail(400,'문의 내용을 입력해 주세요.');
+    await transaction(async()=>{
+      const actor=(await requireMember(req)).member;
+      const count=await db.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE actor_id=? AND action='feedback' AND created_at>=?").get(actor.id,new Date(Date.now()-86400000).toISOString());
+      if(Number(count.n)>=5)fail(429,'문의는 하루 최대 5건까지 보낼 수 있습니다.');
+      await audit(db,actor.id,'feedback',{message});
+    });
+    return send(res,201,{ok:true});
+  }
+  if(path==='/api/activity'&&method==='GET'){
+    if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
+    const rows=await db.prepare('SELECT a.id,a.action,a.details,a.created_at,m.name AS actor_name FROM audit_log a LEFT JOIN members m ON m.id=a.actor_id ORDER BY a.id DESC LIMIT 100').all();
+    return send(res,200,{entries:rows.map(r=>({...r,details:JSON.parse(r.details)}))});
+  }
+  if (path === '/api/profile' && method === 'PATCH') {
+    const body=await jsonBody(req);
+    const name=cleanText(body.name,100).normalize('NFC');
+    if(!name)fail(400,'이름을 입력해 주세요.');
+    await transaction(async()=>{
+      const actor=(await requireMember(req)).member;
+      await db.prepare("UPDATE members SET name=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(name,actor.id);
+      await audit(db,actor.id,'profile.update',{name});
+    });
+    return send(res,200,{member:await safeMember(await db.prepare('SELECT * FROM members WHERE id=?').get(member.id))});
+  }
+  if (path === '/api/members/update' && method === 'POST') {
+    if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
+    const body=await jsonBody(req);
+    if(typeof body.id!=='string'||!await db.prepare('SELECT id FROM members WHERE id=?').get(body.id))fail(404,'멤버를 찾을 수 없습니다.');
+    const result=await applyImport(db,{members:[{'아이디':body.id,'이름':body.name,'세션':body.session,'기수':body.generation,'전화번호':body.phone,'관리자여부':body.admin===true?'Y':'N'}]},member.id);
+    return send(res,200,result);
+  }
+  if (path === '/api/teams/update' && method === 'POST') {
+    if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
+    const body=await jsonBody(req),id=Number(body.id);
+    if(!Number.isSafeInteger(id)||id<1)fail(400,'팀 번호를 확인해 주세요.');
+    const name=cleanText(body.name,100).normalize('NFC');
+    if(!name||name.includes(','))fail(400,'쉼표 없이 팀 이름을 입력해 주세요.');
+    await transaction(async()=>{
+      const actor=(await requireMember(req,{admin:true})).member;
+      const before=await db.prepare('SELECT name FROM teams WHERE id=?').get(id);
+      if(!before)fail(404,'팀을 찾을 수 없습니다.');
+      if(await db.prepare('SELECT id FROM teams WHERE name=? AND id<>?').get(name,id))fail(409,'같은 이름의 팀이 있습니다.');
+      await db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,id);
+      await applyImport(db,{teams:[{'팀명':name,...Object.fromEntries(Object.entries({보컬:'vocal',기타1:'guitar1',기타2:'guitar2',베이스:'bass',드럼:'drums',키보드:'keyboard'}).map(([label,slot])=>[label,body.slots?.[slot]||'']))}]},actor.id);
+      await audit(db,actor.id,'team.update',{teamId:id,previousName:before.name,name});
+    });
+    return send(res,200,{ok:true});
+  }
   if (path === '/api/members' && method === 'GET') {
     if (!member.admin) fail(403, '운영진만 사용할 수 있습니다.');
     return send(res, 200, { members: await listMembers(db) });
@@ -420,9 +480,9 @@ async function api(req, res, url) {
   }
   if (path === '/api/booking-options' && method === 'GET') {
     if (!member.admin) fail(403, '운영진만 사용할 수 있습니다.');
-    return send(res, 200, { members: await db.prepare('SELECT id,name FROM members ORDER BY name,id').all() });
+    return send(res, 200, { members: await db.prepare('SELECT id,name,session FROM members ORDER BY name,id').all() });
   }
-  if (path === '/api/teams' && method === 'GET') return send(res, 200, { teams: (await teamList()) });
+  if (path === '/api/teams' && method === 'GET') {const teams=await teamList();return send(res,200,{teams:member.admin?teams:teams.filter(t=>t.members.some(m=>m.id===member.id))});}
   if (['/api/bookings','/api/schedule'].includes(path) && method === 'GET') {
     return send(res, 200, await scheduleData(member, url.searchParams.get('week'), path === '/api/schedule'));
   }
@@ -477,7 +537,7 @@ async function api(req, res, url) {
       const series = await loadSeries(current.member);
       if (!series.canCancelAll) fail(403, '전체 예약 중 취소할 수 없는 날짜가 있습니다. 지난 예약·당일 취소 제한 또는 소속 팀을 확인하고 운영진에게 문의해 주세요.');
       const deleted = await db.prepare('DELETE FROM bookings WHERE series_id=?').run(series.seriesId);
-      await audit(db, current.member.id, 'booking.cancel_series', { seriesId: series.seriesId, bookingIds: series.bookings.map(b => b.id), count: deleted.changes });
+      await audit(db, current.member.id, 'booking.cancel_series', { seriesId: series.seriesId, bookingIds: series.bookings.map(b => b.id), bookings:series.bookings.map(b=>({id:b.id,date:b.date,start:b.start,end:b.end,teamId:b.teamId})), count: deleted.changes });
       return deleted.changes;
     });
     return send(res, 200, { ok: true, count });
@@ -489,7 +549,7 @@ async function api(req, res, url) {
       if (!booking) fail(404, '예약을 찾을 수 없습니다.');
       if (!booking.canCancel) fail(403, '취소할 수 없는 예약입니다. 당일 취소 제한 또는 시작 시간을 확인하고 운영진에게 문의해 주세요.');
       await db.prepare('DELETE FROM bookings WHERE id=?').run(booking.id);
-      await audit(db, member.id, 'booking.cancel', { bookingId: booking.id });
+      await audit(db, member.id, 'booking.cancel', { bookingId: booking.id,date:booking.date,start:booking.start,end:booking.end,memberId:booking.memberId,teamId:booking.teamId,seriesId:booking.seriesId });
     });
     return send(res, 200, { ok: true });
   }
@@ -528,7 +588,7 @@ async function api(req, res, url) {
     }));
     return send(res, postMatch ? 200 : 201, { post: (await postView((await db.prepare(`${postSelect} WHERE p.id=?`).get(id)))) });
   }
-  if (path === '/api/settings' && method === 'GET') return send(res, 200, { settings: (await getSettings(db)) });
+  if (path === '/api/settings' && method === 'GET') {if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');return send(res,200,{settings:await getSettings(db)});}
   if (path === '/api/settings' && method === 'PUT') {
     (await requireMember(req, { admin: true })); const body = await jsonBody(req);
     const settings = await transaction(async () => {
@@ -540,6 +600,12 @@ async function api(req, res, url) {
         settings[key] = value;
       }
     }
+    validatePolicies(body,validDate,fail);
+    if(body.specialPolicy!==undefined)settings.specialPolicy=body.specialPolicy;
+    if(body.quotaOverrides!==undefined){
+      for(const r of body.quotaOverrides){if(!await db.prepare(r.type==='team'?'SELECT id FROM teams WHERE id=?':'SELECT id FROM members WHERE id=?').get(r.id))fail(400,'개별 한도의 대상을 찾을 수 없습니다.');}
+      settings.quotaOverrides=body.quotaOverrides;
+    }
     if (body.advanceWeeks !== undefined) {
       if (!Number.isInteger(body.advanceWeeks) || body.advanceWeeks < 1 || body.advanceWeeks > 52) fail(400, '예약 가능 범위는 1~52주로 입력해 주세요.');
       settings.advanceWeeks = body.advanceWeeks;
@@ -549,7 +615,7 @@ async function api(req, res, url) {
       if (body.recurringUntil !== '' && !validDate(body.recurringUntil)) fail(400, '정기예약 종료일을 확인해 주세요.');
       settings.recurringUntil = body.recurringUntil;
     }
-      for (const [key, value] of Object.entries(settings)) (await db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(value), key));
+      for (const [key, value] of Object.entries(settings)) (await db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value)));
       (await audit(db, member.id, 'settings.update', settings));
     return settings;
     });
@@ -598,6 +664,10 @@ async function staticFile(req, res, url) {
 }
 
 export async function handleRequest(req, res) {
+  const requestId=randomToken().slice(0,12),started=performance.now();let responseStatus=200;
+  const originalWriteHead=res.writeHead.bind(res);res.writeHead=(status,...args)=>{responseStatus=status;return originalWriteHead(status,...args)};
+  res.setHeader('X-Request-ID',requestId);
+
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
@@ -612,10 +682,13 @@ export async function handleRequest(req, res) {
     if (res.headersSent || res.destroyed) { res.end(); return; }
     const status = Number.isInteger(error.status) ? error.status : 500;
     if (status === 500) console.error('Request failed:', error.code || error.name || 'Error');
-    const result = { error: status === 500 ? '서버에서 요청을 처리하지 못했습니다.' : error.message };
+    const result = { requestId, error: status === 500 ? '서버에서 요청을 처리하지 못했습니다.' : error.message };
     if (error.code && status !== 500) result.code = error.code;
     if (error.preview) result.preview = error.preview;
     send(res, status, result);
+  } finally {
+    const durationMs=Math.round(performance.now()-started);
+    if(req.url.startsWith('/api/')&&(durationMs>=1000||responseStatus>=500))console.info(JSON.stringify({event:'api.request',requestId,method:req.method,route:req.url.split('?')[0].split('/').slice(0,3).join('/'),status:responseStatus,durationMs}));
   }
 }
 export const server = http.createServer(handleRequest);

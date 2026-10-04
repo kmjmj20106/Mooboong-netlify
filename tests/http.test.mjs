@@ -235,7 +235,7 @@ test('real HTTP: setup, XLSX import, access control, booking rules and persisten
     // Personal proxy reservations belong to the selected account and consume its quota.
     assert.equal((await member('/api/booking-options')).status,403);
     const choices=(await admin('/api/booking-options')).body.members;
-    assert.deepEqual(Object.keys(choices[0]).sort(),['id','name']);
+    assert.deepEqual(Object.keys(choices[0]).sort(),['id','name','session']);
     assert.equal(choices.length,2);
     const proxyBody={date:repeatDate,start:'14:00',end:'16:00',type:'personal',memberId:'test-user'};
     assert.equal((await member('/api/bookings','POST',{...proxyBody,memberId:'admin'})).status,403);

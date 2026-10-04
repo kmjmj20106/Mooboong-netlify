@@ -1,3 +1,4 @@
+import './static-login.mjs';
 import { access, readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 // Build never connects to the database or changes live club data.
