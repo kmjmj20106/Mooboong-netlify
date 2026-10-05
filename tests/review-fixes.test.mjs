@@ -57,9 +57,11 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
   try{
     await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('startup timeout')),10000);child.stdout.on('data',c=>{if(String(c).includes('http://127.0.0.1')){clearTimeout(timer);resolve()}});child.once('exit',()=>{clearTimeout(timer);reject(Error('early exit'))})});
     const admin=client(),member=client(),guest=client();
-    assert.equal((await admin('/login','POST',{id:'admin',password:'test-admin-password'})).status,200);
+    const logged=await admin('/login','POST',{id:'admin',password:'test-admin-password'});assert.equal(logged.status,200);assert.equal(logged.data.initial.key,'members');assert.equal(logged.data.initial.data.members.length,3);
+    assert.equal((await guest('/directory')).status,401);
     await member('/login','POST',{id:'drummer',password:'test-member-password'});
     assert.equal((await guest('/teams')).status,401);assert.equal((await member('/teams')).data.teams.length,1);
+    assert.equal((await member('/directory')).status,403);assert.equal((await admin('/directory')).data.members.length,3);
     assert.equal((await member('/members/update','POST',{id:'admin',name:'oops',admin:true})).status,403);
     assert.equal((await member('/profile','PATCH',{name:'새 이름',admin:true,id:'admin'})).data.member.admin,false);
     assert.equal((await member('/me')).data.member.id,'drummer');
@@ -81,6 +83,18 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     assert.equal(concurrent.filter(r=>r.status===201).length,1);assert.equal(concurrent.filter(r=>r.status===409).length,9);
     assert.equal((await member('/feedback','POST',{message:'예약 UX 테스트'})).status,201);
     assert.equal((await member('/activity')).status,403);assert.ok((await admin('/activity')).data.entries.some(e=>e.action==='feedback'));
+    const one=concurrent.find(r=>r.status===201).data.booking;
+    assert.equal((await admin('/bookings/'+one.id,'DELETE')).status,200);
+    assert.equal((await admin('/bookings/'+created.data.booking.id+'/series','DELETE')).status,200);
+    const event=await admin('/events','POST',{title:'대청소',date:add(day,1),start:'15:00',end:'16:00'});
+    assert.equal(event.status,201);assert.equal((await admin('/events/'+event.data.event.eventId,'DELETE')).status,200);
+    const deleted=(await admin('/activity?filter=cancellations')).data.entries;
+    assert.equal(deleted.length,3);assert.ok(deleted.every(e=>['booking.cancel','booking.cancel_series','event.delete'].includes(e.action)));
+    assert.equal(deleted.find(e=>e.action==='booking.cancel').details.memberName,'운영진');
+    assert.equal(deleted.find(e=>e.action==='booking.cancel_series').details.bookings[0].teamName,'새 팀');
+    assert.equal(deleted.find(e=>e.action==='event.delete').details.title,'대청소');
+    assert.equal((await admin('/bookings?week='+day)).data.bookings.some(b=>b.id===one.id),false);
+
   }finally{child.kill('SIGTERM');await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));await rm(dir,{recursive:true,force:true})}
 });
 

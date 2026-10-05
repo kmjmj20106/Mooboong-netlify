@@ -53,9 +53,9 @@ async function navigate(initial=null){
   try{
     let data;
     if(initial?.key===key)data=initial.data;
-    else if(route==='members'){const [m,t]=await Promise.all([api('/members'),api('/teams')]);data={members:m.members,teams:t.teams}}
+    else if(route==='members')data=await api('/directory');
     else if(route==='schedule'){const b=await api('/schedule?week='+week);data={bookingData:b,bookings:b.bookings,teams:b.teams}}
-    else if(route==='activity')data={entries:(await api('/activity')).entries};
+    else if(route==='activity')data={entries:(await api('/activity?filter='+(S.activityFilter||'all'))).entries};
     else if(route==='guide')data={guideSections:(await api('/admin-guide')).sections};
     else if(route==='settings')data={settings:(await api('/settings')).settings};
     else data={posts:(await api('/posts')).posts};
@@ -116,7 +116,7 @@ function renderPosts(){$('#main').innerHTML=pageHead('NOTICE','공지','동아�
 function postCards(posts){return posts.length?`<div class="posts-grid">${posts.sort((a,b)=>Number(b.pinned)-Number(a.pinned)||b.id-a.id).map(p=>`<button class="post-card" data-action="read-post" data-id="${p.id}"><span class="tag ${p.pinned?'orange':''}">${p.pinned?'중요 · ':''}${esc(p.category||'일반')}</span><h3>${esc(p.title)}</h3><p>${esc(p.body)}</p><footer>${esc(p.authorName)} · ${postDate(p.updatedAt||p.createdAt)}</footer></button>`).join('')}</div>`:`<section class="panel">${empty(S.route==='wiki'?'첫 번째 문서를 기다리고 있어요':'아직 등록된 공지가 없어요',S.me.admin?(S.route==='wiki'?'합주실 이용법이나 장비 사용법을 남겨 보세요.':'멤버들에게 전할 첫 소식을 작성해 보세요.'):'새로운 내용이 등록되면 이곳에서 확인할 수 있어요.',S.route==='wiki'?'book-open':'megaphone',S.me.admin?button('작성하기','new-post','primary','plus'):'')}</section>`}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!S.me?.mustChangePassword){if($('#calendar-popup'))closeCalendarPreview();else closeModal()}if(e.key==='Tab'&&$('.modal')){const focusable=$$('button:not([disabled]),input:not([disabled]),select,textarea,a[href]',$('#calendar-popup .modal')||$('.modal')).filter(el=>el.offsetParent!==null);if(!focusable.length)return;const first=focusable[0],last=focusable.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
 window.addEventListener('hashchange',()=>{if(S.me&&!S.me.mustChangePassword)navigate()});
-async function boot(){const bootRequest=S.request;try{const result=await api('/bootstrap?'+new URLSearchParams({route:location.hash.slice(1).split('/')[0],week:S.week}));if(bootRequest!==S.request)return;S.setupTokenRequired=result.setupTokenRequired;if(result.setupRequired){authScreen(true);return}S.me=result.member;if(!S.me){if(!$('#auth-form'))authScreen();else icons();return}await navigate(result.initial);if(S.me.mustChangePassword||S.me.must_change_password)passwordScreen()}catch(e){$('#app').innerHTML=`<div class="loading-screen" style="font-size:20px">연결을 확인해 주세요<span>${esc(e.message)}</span><button class="btn" data-action="reload-page" style="margin-top:20px">다시 시도</button></div>`}}
+async function boot(){const bootRequest=S.request;try{const startup=window.mooboongStartup;window.mooboongStartup=null;const route=location.hash.slice(1).split('/')[0];const prefetched=startup&&startup.route===route&&startup.week===S.week?await startup.promise:null;const result=prefetched||await api('/bootstrap?'+new URLSearchParams({route,week:S.week}));if(bootRequest!==S.request)return;S.setupTokenRequired=result.setupTokenRequired;if(result.setupRequired){authScreen(true);return}S.me=result.member;if(!S.me){if(!$('#auth-form'))authScreen();else icons();return}await navigate(result.initial);if(S.me.mustChangePassword||S.me.must_change_password)passwordScreen()}catch(e){$('#app').innerHTML=`<div class="loading-screen" style="font-size:20px">연결을 확인해 주세요<span>${esc(e.message)}</span><button class="btn" data-action="reload-page" style="margin-top:20px">다시 시도</button></div>`}}
 boot();
 
 matchMedia('(max-width:600px)').addEventListener('change',()=>{if(S.me&&S.route==='schedule'&&S.bookingData)renderSchedule()});
@@ -188,6 +188,7 @@ document.addEventListener('click',async e=>{
     else if(a==='logout'){el.disabled=true;el.textContent='로그아웃 중…';S.request++;try{await api('/logout',{method:'POST'});S.me=null;S.upload=null;S.members=[];S.teams=[];S.bookings=[];S.posts=[];S.bookingData=null;S.settings=null;S.guideSections=[];closeModal();authScreen();toast('로그아웃했습니다.')}finally{el.disabled=false;if(el.isConnected)el.textContent='로그아웃'}}
     else if(a==='close-modal')closeModal();
     else if(a==='reload')navigate();
+    else if(a==='activity-filter'){S.activityFilter=el.dataset.filter;S.cache.delete('activity');S.renderedKey=null;await navigate();}
     else if(['members-tab','teams-tab','import-tab'].includes(a)){S.tab=a.split('-')[0];renderMembers()}
     else if(a==='add-quota'){$('#quota-overrides').insertAdjacentHTML('beforeend',quotaOverrideForm());icons()}
     else if(a==='remove-quota')el.closest('.quota-override').remove();
@@ -259,7 +260,7 @@ document.addEventListener('input',e=>{if(e.target.closest('#booking-form'))updat
 document.addEventListener('submit',async e=>{
   e.preventDefault();const f=e.target,b=$('[type=submit]',f),data=Object.fromEntries(new FormData(f));if(!b)return;b.disabled=true;const form=f.getAttribute('id');
   try{
-    if(form==='auth-form'){S.request++;const r=await api(f.dataset.setup==='true'?'/setup':'/login',{method:'POST',body:data});S.me=r.member;await navigate();if(S.me.mustChangePassword)passwordScreen()}
+    if(form==='auth-form'){S.request++;const r=await api(f.dataset.setup==='true'?'/setup':'/login',{method:'POST',body:{...data,route:location.hash.slice(1).split('/')[0],week:S.week}});S.me=r.member;await navigate(r.initial);if(S.me.mustChangePassword)passwordScreen()}
     else if(form==='password-form'){if(data.newPassword!==data.confirmPassword)throw new Error('새 비밀번호가 서로 다릅니다.');S.me=(await api('/password',{method:'POST',body:data})).member;closeModal();await navigate();toast('새 비밀번호를 저장했습니다.')}
     else if(form==='member-password-form'){
       await api('/members/password-reset',{method:'POST',body:{...data,memberId:f.dataset.id}});
@@ -305,6 +306,12 @@ function specialPolicyForm(s){const p=s.specialPolicy||{enabled:false,from:'',un
 function policyBanner(){const p=S.bookingData?.settings?.specialPolicy;return p?.enabled?`<details class="policy-banner"><summary>특별 운영 ${esc(p.from)} ~ ${esc(p.until)}</summary><p>개인 ${p.personalWeeklyHours}시간/주 · 팀 ${p.teamWeeklyHours}시간/주 · 개인 허용 세션: ${esc(p.allowedSessions.join(', ')||'전체')}. 대상별 별도 한도가 있으면 우선 적용됩니다.</p></details>`:''}
 
 function feedbackModal(){showModal('문의 · 오류 제보',`<form id="feedback-form"><p class="booking-hint">어느 화면에서 무엇을 하다가 문제가 생겼는지 적어 주세요. 오류에 표시된 문의 번호가 있으면 함께 남겨 주세요. 비밀번호는 적지 마세요.</p><div class="field"><label for="feedback-message">내용</label><textarea id="feedback-message" name="message" required maxlength="2000"></textarea></div><div class="inline-error" role="alert"></div><div class="modal-actions">${button('취소','close-modal')}<button type="submit" class="btn primary">운영진에게 보내기</button></div></form>`)}
-function renderActivity(){const labels={'feedback':'부원 문의','booking.create':'예약 등록','booking.cancel':'예약 취소','booking.cancel_series':'반복 예약 취소','booking.rename':'예약자 이름 변경','import':'명단 등록','team.update':'팀 수정','profile.update':'이름 수정','settings.update':'예약 규칙 변경','password.reset':'비밀번호 재설정','password.change':'비밀번호 변경'};$('#main').innerHTML=pageHead('ACTIVITY','운영 기록·문의','최근 100건의 기록입니다. 오래된 기록은 DB에 보관됩니다.')+`<div class="handbook">${S.entries.map(e=>`<details class="panel activity-entry"><summary>${esc(labels[e.action]||e.action)} · ${esc(e.actor_name||'운영 시스템')}<small>${esc(new Date(e.created_at).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}))}</small></summary><pre>${esc(e.action==='feedback'?e.details.message:JSON.stringify(e.details,null,2))}</pre></details>`).join('')}</div>`;icons()}
-
-function clientPolicy(date,type,id,session=''){const settings=S.bookingData.settings,p=settings.specialPolicy,active=p?.enabled&&date>=p.from&&date<=p.until;let hours=type==='team'?settings.teamWeeklyHours:settings.personalWeeklyHours;if(active)hours=type==='team'?p.teamWeeklyHours:p.personalWeeklyHours;const match=(settings.quotaOverrides||[]).find(r=>r.type===type&&String(r.id)===String(id)&&date>=r.from&&date<=r.until);if(match)hours=match.hours;return {hours,allowed:!active||type!=='personal'||!p.allowedSessions.length||p.allowedSessions.some(x=>String(session).split(/[,/·\s]+/).includes(x))}}
+function activityDescription(e){
+  const d=e.details||{};
+  const booking=b=>[b.date,b.start&&b.end?`${b.start}–${b.end}`:'',b.teamName||b.memberName||(b.teamId?`팀 #${b.teamId}`:b.memberId||''),b.reservationName?`예약자: ${b.reservationName}`:'',b.bookingId||b.id?`예약 #${b.bookingId||b.id}`:''].filter(Boolean).join(' · ');
+  if(e.action==='booking.cancel')return booking(d)||`예약 #${d.bookingId||'—'} 삭제 (과거 기록에는 상세 정보가 없을 수 있습니다.)`;
+  if(e.action==='booking.cancel_series')return `반복 예약 ${d.count??d.bookingIds?.length??''}건 삭제\n`+(d.bookings?.map(booking).join('\n')||'과거 기록에는 날짜·시간 정보가 없을 수 있습니다.');
+  if(e.action==='event.delete')return ['커스텀 일정 삭제',d.title,d.date,d.start&&d.end?`${d.start}–${d.end}`:'',d.eventId?`일정 #${d.eventId}`:''].filter(Boolean).join(' · ');
+  return e.action==='feedback'?d.message:JSON.stringify(d,null,2);
+}
+function renderActivity(){const labels={'feedback':'부원 문의','booking.create':'예약 등록','booking.cancel':'예약 삭제','booking.cancel_series':'반복 예약 전체 삭제','event.delete':'커스텀 일정 삭제','booking.rename':'예약자 이름 변경','import':'명단 등록','team.update':'팀 수정','profile.update':'이름 수정','settings.update':'예약 규칙 변경','password.reset':'비밀번호 재설정','password.change':'비밀번호 변경'};const filtered=S.activityFilter==='cancellations';$('#main').innerHTML=pageHead('ACTIVITY','운영 기록·문의','선택한 종류의 최근 100건입니다. 삭제된 예약도 기록에서 확인할 수 있습니다.')+`<div class="modal-actions"><button class="btn ${filtered?'':'primary'}" data-action="activity-filter" data-filter="all" aria-pressed="${!filtered}">전체 기록</button><button class="btn ${filtered?'primary':''}" data-action="activity-filter" data-filter="cancellations" aria-pressed="${filtered}">예약 삭제 기록</button></div><div class="handbook">${S.entries.length?S.entries.map(e=>`<details class="panel activity-entry" ${filtered?'open':''}><summary>${esc(labels[e.action]||e.action)} · ${esc(e.actor_name||'운영 시스템')}<small>${esc(new Date(e.created_at).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}))}</small></summary><pre>${esc(activityDescription(e))}</pre></details>`).join(''):'<p class="panel">해당 기록이 없습니다.</p>'}</div>`;icons()}

@@ -12,7 +12,7 @@ import { hashPassword, verifyPassword, randomToken, tokenHash, readCookies } fro
 import { previewImport, applyImport } from './lib/import.mjs';
 
 import { connectDatabase } from './lib/database.mjs';
-import { memberView, listMembers, listTeams } from './lib/member-views.mjs';
+import { memberView, listMembers, listTeams, readDirectory } from './lib/member-views.mjs';
 import { exportMembers } from './lib/member-export.mjs';
 import { readSchedule } from './lib/schedule.mjs';
 
@@ -293,6 +293,26 @@ async function scheduleData(member, dateValue, includeOptions = true) {
     return { bookings, week, settings, usage, ...options };
 }
 
+async function initialData(member,routeValue,weekValue) {
+    // Forced password changes must never expose calendar or management data.
+    if (member.must_change_password) return {member:memberView(member,[]),setupRequired:false};
+    let route = routeValue || (member.admin ? 'members' : 'schedule');
+    if (!['schedule','members','settings','guide','notice','wiki'].includes(route) ||
+        (!member.admin && ['members','settings','guide'].includes(route))) route='schedule';
+    let initial, view;
+    if (route === 'schedule') {
+      const b = await scheduleData(member,weekValue);
+      const memberships = b.teams.flatMap(t=>t.members.filter(m=>m.id===member.id).map(m=>({id:t.id,name:t.name,slot:m.slot})));
+      view=memberView(member,memberships);
+      initial={key:'schedule:'+b.week,data:{bookingData:b,bookings:b.bookings,teams:b.teams}};
+    } else if (route === 'members') {
+      const {members,teams}=await readDirectory(db);
+      view=members.find(m=>m.id===member.id);
+      initial={key:'members',data:{members,teams}};
+    } else view=await safeMember(member);
+    return {member:view,setupRequired:false,initial};
+}
+
 async function api(req, res, url) {
   const path = url.pathname; const method = req.method;
   if (path === '/api/logout' && method === 'POST') {
@@ -313,24 +333,7 @@ async function api(req, res, url) {
     if (!session) return send(res, 200, {member:null,
       setupRequired:!(await db.prepare('SELECT 1 FROM members LIMIT 1').get()),
       setupTokenRequired:Boolean(process.env.SETUP_TOKEN)});
-    const member = session.member;
-    // Forced password changes must never expose calendar or management data.
-    if (member.must_change_password) return send(res, 200, {member:memberView(member,[]),setupRequired:false});
-    let route = url.searchParams.get('route') || (member.admin ? 'members' : 'schedule');
-    if (!['schedule','members','settings','guide','notice','wiki'].includes(route) ||
-        (!member.admin && ['members','settings','guide'].includes(route))) route='schedule';
-    let initial, view;
-    if (route === 'schedule') {
-      const b = await scheduleData(member,url.searchParams.get('week'));
-      const memberships = b.teams.flatMap(t=>t.members.filter(m=>m.id===member.id).map(m=>({id:t.id,name:t.name,slot:m.slot})));
-      view=memberView(member,memberships);
-      initial={key:'schedule:'+b.week,data:{bookingData:b,bookings:b.bookings,teams:b.teams}};
-    } else if (route === 'members') {
-      const [members,teams]=await Promise.all([listMembers(db),teamList()]);
-      view=members.find(m=>m.id===member.id);
-      initial={key:'members',data:{members,teams}};
-    } else view=await safeMember(member);
-    return send(res,200,{member:view,setupRequired:false,initial});
+    return send(res,200,await initialData(session.member,url.searchParams.get('route'),url.searchParams.get('week')));
   }
   if (path === '/api/status' && method === 'GET') return send(res, 200, { service:'mooboong', storage:db.dialect, setupRequired: !(await db.prepare('SELECT 1 FROM members LIMIT 1').get()), setupTokenRequired:Boolean(process.env.SETUP_TOKEN) });
   if (path === '/api/setup' && method === 'POST') {
@@ -358,7 +361,7 @@ async function api(req, res, url) {
     if (!verifyPassword(password, member?.password_hash || dummyHash) || !member) fail(401, '아이디 또는 비밀번호를 확인해 주세요.');
     await state.clearRate(id);
     (await createSession(res, id));
-    return send(res, 200, { member: (await safeMember(member)) });
+    return send(res, 200, await initialData(member,body.route,body.week));
   }
   if (path === '/api/me' && method === 'GET') return send(res, 200, { member: (await safeMember((await requireMember(req, { allowPasswordChange: true })).member)) });
   if (path === '/api/password' && method === 'POST') {
@@ -403,7 +406,7 @@ async function api(req, res, url) {
   }
   if(path==='/api/activity'&&method==='GET'){
     if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
-    const rows=await db.prepare('SELECT a.id,a.action,a.details,a.created_at,m.name AS actor_name FROM audit_log a LEFT JOIN members m ON m.id=a.actor_id ORDER BY a.id DESC LIMIT 100').all();
+    const rows=await db.prepare(`SELECT a.id,a.action,a.details,a.created_at,m.name AS actor_name FROM audit_log a LEFT JOIN members m ON m.id=a.actor_id WHERE (?=0 OR a.action IN ('booking.cancel','booking.cancel_series','event.delete')) ORDER BY a.id DESC LIMIT 100`).all(url.searchParams.get('filter')==='cancellations'?1:0);
     return send(res,200,{entries:rows.map(r=>({...r,details:JSON.parse(r.details)}))});
   }
   if (path === '/api/profile' && method === 'PATCH') {
@@ -440,6 +443,10 @@ async function api(req, res, url) {
       await audit(db,actor.id,'team.update',{teamId:id,previousName:before.name,name});
     });
     return send(res,200,{ok:true});
+  }
+  if (path === '/api/directory' && method === 'GET') {
+    if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
+    return send(res,200,await readDirectory(db));
   }
   if (path === '/api/members' && method === 'GET') {
     if (!member.admin) fail(403, '운영진만 사용할 수 있습니다.');
@@ -495,8 +502,10 @@ async function api(req, res, url) {
       const current = await requireMember(req, { admin: true });
       const id = eventMatch ? Number(eventMatch[1]) : null;
       if (method === 'DELETE') {
-        if (!(await db.prepare('DELETE FROM events WHERE id=?').run(id)).changes) fail(404, '일정을 찾을 수 없습니다.');
-        await audit(db, current.member.id, 'event.delete', { eventId: id });
+        const before=await db.prepare('SELECT title,date,start_min,end_min FROM events WHERE id=?').get(id);
+        if(!before)fail(404,'일정을 찾을 수 없습니다.');
+        await db.prepare('DELETE FROM events WHERE id=?').run(id);
+        await audit(db, current.member.id, 'event.delete', { eventId:id,title:before.title,date:before.date,start:toTime(before.start_min),end:toTime(before.end_min) });
         return { ok: true };
       }
       return { event: await saveEvent(body, current.member, id) };
@@ -537,7 +546,7 @@ async function api(req, res, url) {
       const series = await loadSeries(current.member);
       if (!series.canCancelAll) fail(403, '전체 예약 중 취소할 수 없는 날짜가 있습니다. 지난 예약·당일 취소 제한 또는 소속 팀을 확인하고 운영진에게 문의해 주세요.');
       const deleted = await db.prepare('DELETE FROM bookings WHERE series_id=?').run(series.seriesId);
-      await audit(db, current.member.id, 'booking.cancel_series', { seriesId: series.seriesId, bookingIds: series.bookings.map(b => b.id), bookings:series.bookings.map(b=>({id:b.id,date:b.date,start:b.start,end:b.end,teamId:b.teamId})), count: deleted.changes });
+      await audit(db, current.member.id, 'booking.cancel_series', { seriesId: series.seriesId, bookingIds: series.bookings.map(b => b.id), bookings:series.bookings.map(b=>({id:b.id,date:b.date,start:b.start,end:b.end,memberName:b.memberName,teamId:b.teamId,teamName:b.teamName,reservationName:b.reservationName})), count: deleted.changes });
       return deleted.changes;
     });
     return send(res, 200, { ok: true, count });
@@ -549,7 +558,7 @@ async function api(req, res, url) {
       if (!booking) fail(404, '예약을 찾을 수 없습니다.');
       if (!booking.canCancel) fail(403, '취소할 수 없는 예약입니다. 당일 취소 제한 또는 시작 시간을 확인하고 운영진에게 문의해 주세요.');
       await db.prepare('DELETE FROM bookings WHERE id=?').run(booking.id);
-      await audit(db, member.id, 'booking.cancel', { bookingId: booking.id,date:booking.date,start:booking.start,end:booking.end,memberId:booking.memberId,teamId:booking.teamId,seriesId:booking.seriesId });
+      await audit(db, member.id, 'booking.cancel', { bookingId: booking.id,date:booking.date,start:booking.start,end:booking.end,memberId:booking.memberId,memberName:booking.memberName,teamId:booking.teamId,teamName:booking.teamName,reservationName:booking.reservationName,seriesId:booking.seriesId });
     });
     return send(res, 200, { ok: true });
   }

@@ -38,14 +38,14 @@ test('cached navigation paints before network, preserves unchanged view and igno
   const first=vm.runInContext('navigate()',context);
   assert.equal(nodes['#main'].innerHTML,'member list','cached content appears while both requests are pending');
   assert.equal(paints,1);
-  for(const load of loads)load.resolve(load.path==='/members'?{members:old.members}:{teams:old.teams});
+  for(const load of loads)load.resolve({members:old.members,teams:old.teams});
   await first;
   assert.equal(paints,1,'unchanged refresh does not replace the visible DOM');
   loads=[];
   const second=vm.runInContext('navigate()',context);
   assert.equal(nodes['#main'].innerHTML,'member list','same-route reload keeps the current view');
   state.me=null;state.request++;state.cache.clear();nodes['#main'].innerHTML='login';
-  for(const load of loads)load.resolve(load.path==='/members'?{members:old.members}:{teams:old.teams});
+  for(const load of loads)load.resolve({members:old.members,teams:old.teams});
   await second;
   assert.equal(nodes['#main'].innerHTML,'login');assert.equal(state.cache.size,0);
 });
@@ -88,4 +88,23 @@ test('bootstrap data paints the first calendar without fetching it again',async(
     shell(){},renderSchedule(){paints++},api(){throw Error('unnecessary first-screen fetch')},renderMembers(){},renderGuide(){},renderSettings(){},renderPosts(){},refreshMemberTable(){},toast(){},esc:String,button(){return ''},
   });
   vm.runInContext(code,context);await vm.runInContext('navigate(initial)',context);assert.equal(paints,1);
+});
+
+test('startup starts exactly one anonymous-safe bootstrap and boot consumes it',async()=>{
+  const startup=await readFile(new URL('../public/startup.js',import.meta.url),'utf8');
+  const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+  let calls=0,navigations=0;const payload={member:{id:'admin',admin:true},initial:{key:'members',data:{members:[],teams:[]}}};
+  const context=vm.createContext({window:{},location:{hash:'#members'},Intl,Date,URLSearchParams,fetch:async()=>{calls++;return {ok:true,json:async()=>payload}}});
+  vm.runInContext(startup,context);await context.window.mooboongStartup.promise;assert.equal(calls,1);
+  Object.assign(context,{S:{request:0,week:context.window.mooboongStartup.week},api(){throw Error('duplicate bootstrap')},navigate:async initial=>{assert.equal(initial,payload.initial);navigations++},passwordScreen(){},$:()=>({}),icons(){}});
+  const boot=source.slice(source.indexOf('async function boot()'),source.indexOf('\n',source.indexOf('async function boot()')));
+  vm.runInContext(boot,context);await vm.runInContext('boot()',context);assert.equal(navigations,1);assert.equal(context.window.mooboongStartup,null);
+  const failed=vm.createContext({window:{},location:{hash:''},Intl,Date,URLSearchParams,fetch:async()=>{throw Error('offline')}});vm.runInContext(startup,failed);assert.equal(await failed.window.mooboongStartup.promise,null);
+});
+
+test('cancellation logs display readable details and escape member-supplied text',async()=>{
+  const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');let html='';
+  const context=vm.createContext({S:{activityFilter:'cancellations',entries:[{action:'booking.cancel',actor_name:'운영진',created_at:'2026-10-06T00:00:00Z',details:{date:'2026-10-07',start:'10:00',end:'11:00',memberName:'<script>x</script>',bookingId:1}}]},$:()=>({set innerHTML(v){html=v}}),esc:v=>String(v??'').replaceAll('<','&lt;').replaceAll('>','&gt;'),pageHead:()=>'',icons(){}});
+  vm.runInContext(source.slice(source.indexOf('function activityDescription(')),context);vm.runInContext('renderActivity()',context);
+  assert.match(html,/예약 삭제/);assert.match(html,/10:00–11:00/);assert.match(html,/2026-10-07/);assert.ok(!html.includes('<script>'));assert.match(html,/&lt;script&gt;/);
 });

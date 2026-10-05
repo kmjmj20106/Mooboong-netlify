@@ -70,3 +70,20 @@ test('PostgreSQL initializes each pooled connection once and retries failed init
   assert.equal(statements.filter(s=>s.startsWith('SET search_path')).length,3);
   assert.equal(releases,4);
 });
+
+test('PostgreSQL management directory uses one query and matches existing views without hashes',async()=>{
+  const {PGlite}=await import('@electric-sql/pglite');const {readFile}=await import('node:fs/promises');
+  const {readDirectory}=await import('../lib/member-views.mjs');
+  const engine=await PGlite.create();let calls=0;
+  try{
+    await engine.exec(await readFile(new URL('../schema.sql',import.meta.url),'utf8'));
+    await engine.exec(`INSERT INTO members(id,name,password_hash,admin,must_change_password) VALUES('a','운영진','never-expose',1,0),('b','멤버','never-expose',0,1);
+      INSERT INTO teams(name) VALUES('10팀'),('2팀'),('빈 팀');
+      INSERT INTO team_members(team_id,slot,member_id) VALUES(1,'vocal','a'),(1,'vocal:2','b'),(1,'drums','a'),(2,'keyboard','b');`);
+    const db=postgresAdapter({connect:async()=>({query:async(sql,args)=>{calls++;return engine.query(sql,args)},release(){}}),end:async()=>{}},{transactionPooler:true});
+    const result=await readDirectory(db);assert.equal(calls,1);
+    assert.deepEqual(result.members,await listMembers(db));assert.deepEqual(result.teams,await listTeams(db));
+    assert.ok(!JSON.stringify(result).includes('never-expose'));assert.ok(!JSON.stringify(result).includes('password_hash'));
+    assert.equal(result.teams.find(t=>t.name==='10팀').slots.vocal,'a\nb');
+  }finally{await engine.close()}
+});
