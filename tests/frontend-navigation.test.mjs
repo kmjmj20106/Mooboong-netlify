@@ -108,3 +108,10 @@ test('cancellation logs display readable details and escape member-supplied text
   vm.runInContext(source.slice(source.indexOf('function activityDescription(')),context);vm.runInContext('renderActivity()',context);
   assert.match(html,/예약 삭제/);assert.match(html,/10:00–11:00/);assert.match(html,/2026-10-07/);assert.ok(!html.includes('<script>'));assert.match(html,/&lt;script&gt;/);
 });
+
+test('real calendar renderer keeps its policy helper and displays limits',async()=>{
+ const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+ const code=['clientPolicy','renderSchedule'].map(name=>source.split('\n').find(line=>line.startsWith('function '+name+'('))).join('\n');
+ let html='';const context=vm.createContext({S:{me:{id:'admin',admin:true,session:'드럼'},week:'2026-10-04',bookings:[],bookingData:{usage:{personalHours:0,teams:[]},settings:{personalWeeklyHours:3,teamWeeklyHours:6,maxContinuousHours:3,advanceWeeks:4,specialPolicy:{enabled:false},quotaOverrides:[]}}},$:()=>({set innerHTML(v){html=v}}),today:()=> '2026-10-06',sunday:()=> '2026-10-04',fmt:String,addDays:()=> '2026-10-10',esc:String,pageHead:()=>'',button:()=>'',icon:()=>'',icons(){},policyBanner:()=>'',calendarWide:()=>false,weeklyGrid:()=>'<div>시간표</div>'});
+ vm.runInContext(code,context);vm.runInContext('renderSchedule()',context);assert.match(html,/시간표/);assert.match(html,/3시간/);assert.match(html,/6/);
+});
