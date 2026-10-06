@@ -42,7 +42,7 @@ test('special rules are opt-in, date bounded, and per-target quotas override hou
 });
 
 test('Markdown renders headings/lists/code and escapes raw HTML and unsafe links',async()=>{
-  const context={window:{}};vm.runInNewContext(await readFile(new URL('../public/markdown.js',import.meta.url),'utf8'),context);
+  const {JSDOM}=await import('jsdom');const dom=new JSDOM('',{runScripts:'outside-only'});const context=dom.getInternalVMContext();vm.runInContext(await readFile(new URL('../public/markdown.js',import.meta.url),'utf8'),context);
   const result=context.window.renderMarkdown('# 제목\n- **내용**\n<script>alert(1)</script>\n[x](javascript:alert(1))\n[사이트](https://example.com)\n```\n<img onerror=x>\n```');
   assert.match(result,/<h2>제목<\/h2>/);assert.match(result,/<li><strong>내용/);assert.ok(!result.includes('<script>'));assert.ok(!result.includes('href="javascript:'));assert.ok(!result.includes('<img '));assert.match(result,/rel="noopener noreferrer"/);
 });

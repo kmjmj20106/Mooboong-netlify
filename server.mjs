@@ -265,6 +265,19 @@ async function postView(row, attachments = null) {
     sourceUrl:row.source_url, embedUrl:notionEmbedUrl(row.source_url), hasDocument:Boolean(row.has_document ?? row.document_html), attachments:attachments ?? (await db.prepare('SELECT id,name,length(content) AS size FROM attachments WHERE post_id=?').all(row.id)), createdAt: row.created_at, updatedAt: row.updated_at };
 }
 const postSelect = `SELECT p.id,p.kind,p.title,p.body,p.category,p.pinned,p.author_id,p.created_at,p.updated_at,p.source_url,CASE WHEN length(p.document_html)>0 THEN 1 ELSE 0 END AS has_document,m.name AS author_name FROM posts p JOIN members m ON m.id=p.author_id`;
+async function listPosts(kind=null) {
+  const filter=kind?' WHERE p.kind=?':'';
+  let rows;
+  if(db.dialect==='postgres'){
+    const sql=postSelect.replace(' FROM posts p',`,COALESCE((SELECT json_agg(json_build_object('id',a.id,'name',a.name,'size',length(a.content))) FROM attachments a WHERE a.post_id=p.id),'[]'::json) AS attachment_list FROM posts p`);
+    rows=await db.prepare(sql+filter+' ORDER BY p.pinned DESC,p.updated_at DESC,p.id DESC').all(...(kind?[kind]:[]));
+    return Promise.all(rows.map(r=>postView(r,r.attachment_list)));
+  }
+  rows=await db.prepare(postSelect+filter+' ORDER BY p.pinned DESC,p.updated_at DESC,p.id DESC').all(...(kind?[kind]:[]));
+  const attachments=await db.prepare(`SELECT a.id,a.post_id,a.name,length(a.content) AS size FROM attachments a JOIN posts p ON p.id=a.post_id${filter}`).all(...(kind?[kind]:[]));
+  const byPost=new Map();for(const {post_id,...a}of attachments){if(!byPost.has(post_id))byPost.set(post_id,[]);byPost.get(post_id).push(a)}
+  return Promise.all(rows.map(r=>postView(r,byPost.get(r.id)||[])));
+}
 function validatePost(body) {
   if (!['notice', 'wiki'].includes(body.kind)) fail(400, '공지 또는 위키를 선택해 주세요.');
   if (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 150) fail(400, '제목은 1~150자로 입력해 주세요.');
@@ -309,6 +322,9 @@ async function initialData(member,routeValue,weekValue) {
       const {members,teams}=await readDirectory(db);
       view=members.find(m=>m.id===member.id);
       initial={key:'members',data:{members,teams}};
+    } else if(route==='notice'||route==='wiki'){
+      const [profile,posts]=await Promise.all([safeMember(member),listPosts()]);
+      view=profile;initial={key:'notice',data:{posts}};
     } else view=await safeMember(member);
     return {member:view,setupRequired:false,initial};
 }
@@ -565,13 +581,9 @@ async function api(req, res, url) {
   if (path === '/api/posts' && method === 'GET') {
     const kind = url.searchParams.get('kind');
     if (kind && !['notice', 'wiki'].includes(kind)) fail(400, '게시물 종류를 확인해 주세요.');
-    const rows = kind ? (await db.prepare(`${postSelect} WHERE p.kind=? ORDER BY p.pinned DESC,p.updated_at DESC,p.id DESC`).all(kind))
-      : (await db.prepare(`${postSelect} ORDER BY p.pinned DESC,p.updated_at DESC,p.id DESC`).all());
-    const attachments = await db.prepare(`SELECT a.id,a.post_id,a.name,length(a.content) AS size FROM attachments a JOIN posts p ON p.id=a.post_id${kind?' WHERE p.kind=?':''}`).all(...(kind?[kind]:[]));
-    const byPost = new Map();
-    for (const {post_id,...attachment} of attachments) { if (!byPost.has(post_id)) byPost.set(post_id,[]); byPost.get(post_id).push(attachment); }
-    return send(res, 200, { posts: await Promise.all(rows.map(row=>postView(row,byPost.get(row.id)||[]))) });
+    return send(res,200,{posts:await listPosts(kind)});
   }
+
   const postMatch = path.match(/^\/api\/posts\/(\d+)$/);
   if (postMatch && method === 'DELETE') {
     await transaction(async()=>{
@@ -673,8 +685,8 @@ async function staticFile(req, res, url) {
 }
 
 export async function handleRequest(req, res) {
-  const requestId=randomToken().slice(0,12),started=performance.now();let responseStatus=200;
-  const originalWriteHead=res.writeHead.bind(res);res.writeHead=(status,...args)=>{responseStatus=status;return originalWriteHead(status,...args)};
+  const requestId=randomToken().slice(0,12),started=performance.now();let responseStatus=200,initMs=0;
+  const originalWriteHead=res.writeHead.bind(res);res.writeHead=(status,...args)=>{responseStatus=status;res.setHeader('Server-Timing',`init;dur=${initMs.toFixed(1)}, app;dur=${(performance.now()-started).toFixed(1)}`);return originalWriteHead(status,...args)};
   res.setHeader('X-Request-ID',requestId);
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -682,7 +694,7 @@ export async function handleRequest(req, res) {
   res.setHeader('Referrer-Policy', 'same-origin');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self' https://*.notion.site; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
   try {
-    await initializeApp();
+    const initStart=performance.now();await initializeApp();initMs=performance.now()-initStart;
     if (!(appOrigin ? [new URL(appOrigin).host,`127.0.0.1:${port}`,`localhost:${port}`] : [`127.0.0.1:${port}`, `localhost:${port}`]).includes(req.headers.host)) fail(403, '로컬 주소로 접속해 주세요.');
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith('/api/')) { csrf(req); await db.withRequest(async () => (await api(req, res, url))); }

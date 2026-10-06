@@ -1,3 +1,5 @@
+import {build} from 'esbuild';
+await build({entryPoints:['scripts/markdown-entry.mjs'],outfile:'public/markdown.js',bundle:true,minify:true,format:'iife',platform:'browser'});
 import './static-login.mjs';
 import { access, readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
