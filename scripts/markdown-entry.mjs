@@ -1,3 +1,5 @@
+import {zipSync} from 'fflate';
+window.zipMarkdownFiles=zipSync;
 import {Marked} from 'marked';
 import DOMPurify from 'dompurify';
 const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

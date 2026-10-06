@@ -118,7 +118,7 @@ async function checkLoginRate(req, id) { await state.rate(req.socket.remoteAddre
 async function readBody(req, limit = 2 * 1024 * 1024) {
   if (req.headers['x-upload-token']) {
     const path = new URL(req.url, 'http://localhost').pathname;
-    if (!['/api/wiki/import','/api/import/file'].includes(path) && !/^\/api\/posts\/\d+\/attachments$/.test(path)) fail(400, '지원하지 않는 업로드 요청입니다.');
+    if (!['/api/wiki/import','/api/markdown/import','/api/import/file'].includes(path) && !/^\/api\/posts\/\d+\/attachments$/.test(path)) fail(400, '지원하지 않는 업로드 요청입니다.');
     const session = await requireMember(req, {admin:true});
     const bytes = await state.take(session,req.headers['x-upload-token'],path);
     if (bytes.length > limit) fail(413, '파일 또는 요청이 너무 큽니다.');
@@ -240,6 +240,7 @@ async function createBooking(body,member,req) {
       if(body.skipConflicts===true && seriesId && (rows.some(collision)||events.some(collision))){skipped.push({date:day,reason:'기존 예약 또는 일정과 겹침'});continue;}
       if(rows.some(collision))fail(409,`${day}: 다른 예약과 시간이 겹칩니다. 빈 시간을 다시 선택해 주세요.`);
       if(events.some(collision))fail(409,`${day}: 커스텀 일정이 있는 시간입니다. 다른 시간을 선택해 주세요.`);
+      if(type==='personal'&&own.some(r=>r.date===day))fail(400,`${day}: 개인 연습은 같은 사람 명의로 하루 한 번만 예약할 수 있습니다. 기존 예약을 취소한 뒤 다시 예약해 주세요.`);
       const week=sunday(day),next=addDays(week,7);
       const used=own.filter(r=>r.date>=week&&r.date<next).reduce((n,r)=>n+r.end_min-r.start_min,0);
       if(used+end-start>limit)fail(400,`${day}: ${type==='team'?'팀':'개인'} 주간 예약 한도 ${limit/60}시간을 초과합니다.`);
@@ -398,7 +399,7 @@ async function api(req, res, url) {
   if (path === '/api/uploads' && method === 'POST') {
     if (!member.admin) fail(403, '운영진만 사용할 수 있습니다.');
     const body=await jsonBody(req);
-    const limit=body.path==='/api/wiki/import'?20:body.path==='/api/import/file'?4:/^\/api\/posts\/\d+\/attachments$/.test(body.path||'')?10:0;
+    const limit=['/api/wiki/import','/api/markdown/import'].includes(body.path)?20:body.path==='/api/import/file'?4:/^\/api\/posts\/\d+\/attachments$/.test(body.path||'')?10:0;
     if (!limit || !Number.isInteger(body.size) || body.size<1 || body.size>limit*1024*1024) fail(400,'파일 크기 또는 업로드 경로를 확인해 주세요.');
     return send(res,201,{token:await state.create(session,body.path,body.size)});
   }

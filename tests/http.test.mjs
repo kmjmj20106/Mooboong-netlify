@@ -151,6 +151,10 @@ test('real HTTP: setup, XLSX import, access control, booking rules and persisten
     assert.equal(personal.status, 201, JSON.stringify(personal.body));
     assert.equal((await member('/api/bookings', 'POST', { date, start: '10:30', end: '11:00', type: 'personal' })).status, 409);
     assert.equal((await member('/api/bookings', 'POST', { date, start: '13:00', end: '15:00', type: 'personal' })).status, 400, 'personal weekly quota');
+    const daily=await admin('/api/bookings','POST',{date,start:'12:00',end:'12:30',type:'personal',memberId:'test-user'});
+    assert.equal(daily.status,400);assert.match(daily.body.error,/하루 한 번/);
+    const separate=await member('/api/bookings','POST',{date,start:'22:00',end:'22:30',type:'personal'});
+    assert.equal(separate.status,400);assert.match(separate.body.error,/하루 한 번/);
     assert.equal((await member('/api/bookings', 'POST', { date, start: '13:00', end: '14:00', type: 'team', teamId: otherTeamId })).status, 403);
     assert.equal((await member('/api/bookings', 'POST', { date, start: '13:00', end: '16:00', type: 'team', teamId })).status, 201);
     assert.equal((await member('/api/bookings', 'POST', { date, start: '16:00', end: '16:30', type: 'team', teamId })).status, 400, 'adjacent bookings count toward continuous limit');
@@ -158,6 +162,10 @@ test('real HTTP: setup, XLSX import, access control, booking rules and persisten
     assert.equal((await member('/api/bookings', 'POST', { date, start: '21:00', end: '22:00', type: 'team', teamId })).status, 400, 'team weekly quota');
     assert.equal((await member(`/api/bookings/${personal.body.booking.id}`, 'DELETE')).status, 200);
     assert.equal((await member(`/api/bookings?week=${date}`)).body.bookings.length, 2);
+
+    const sameDayRace=await Promise.all(['08:00','08:30'].map((start,i)=>admin('/api/bookings','POST',{date,start,end:i?'09:00':'08:30',type:'personal'})));
+    assert.deepEqual(sameDayRace.map(r=>r.status).sort(),[201,400],'non-overlapping simultaneous personal requests still allow one per day');
+    await admin(`/api/bookings/${sameDayRace.find(r=>r.status===201).body.booking.id}`,'DELETE');
 
     // The expanded operating window includes both endpoints.
     const day = offset => new Date(new Date(date+'T00:00:00Z').valueOf()+offset*86400000).toISOString().slice(0,10);
