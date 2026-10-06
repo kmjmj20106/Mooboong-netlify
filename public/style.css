@@ -36,3 +36,7 @@
 .activity-entry{padding:16px}.activity-entry summary{cursor:pointer;font-size:14px}.activity-entry small{display:block;color:var(--muted);margin-top:6px}.activity-entry pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.7}.profile-link{font-size:12px;background:#303641;color:white;border:0;margin-bottom:8px}
 
 .markdown-preview{margin-top:12px;padding:18px;border:1px solid var(--line);border-radius:8px;max-height:50vh;overflow:auto;background:#fff}.markdown table{display:block;max-width:100%;overflow:auto;border-collapse:collapse;margin:16px 0}.markdown th,.markdown td{border:1px solid var(--line);padding:8px 12px;white-space:normal}.markdown pre{overflow:auto;padding:14px;background:#f5f5f8}.markdown ul,.markdown ol{padding-left:24px}.markdown input[type=checkbox]{width:auto;margin-right:8px}.activity-entry pre{white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* Imported documents grow with their contents; the outer page owns scrolling. */
+.wiki-document:not(.notion-live){display:block;min-height:0;max-height:none;overflow:hidden}
+.markdown-preview{max-height:none;overflow:visible}
