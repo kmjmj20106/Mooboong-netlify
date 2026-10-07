@@ -191,16 +191,26 @@ async function saveEvent(body, actor, id = null) {
   return eventView(await db.prepare(`${eventSelect} WHERE e.id=?`).get(id), actor);
 }
 async function getBooking(id, member) { const row = (await db.prepare(`${bookingSelect} WHERE b.id=?`).get(id)); return row ? (await bookingView(row, member)) : null; }
-async function createBooking(body,member,req) {
+async function createBooking(body,member,req,replaceId=null) {
   return transaction(async()=>{
     member=(await requireMember(req)).member;
+    let previous=null;
+    if(replaceId!==null){
+      if(!member.admin)fail(403,'운영진만 예약 명의를 변경할 수 있습니다.');
+      previous=await db.prepare('SELECT * FROM bookings WHERE id=?').get(replaceId);
+      if(!previous)fail(404,'예약을 찾을 수 없습니다.');
+      if(previous.type==='personal'&&typeof body.memberId!=='string')fail(400,'예약할 멤버를 선택해 주세요.');
+      if(previous.type==='personal'?body.memberId===previous.member_id:Number(body.teamId)===previous.team_id)return {booking:await getBooking(replaceId,member)};
+      const time=n=>String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0');
+      body={memberId:previous.type==='personal'?body.memberId:previous.member_id,teamId:body.teamId,type:previous.type,date:previous.date,start:time(previous.start_min),end:time(previous.end_min)};
+    }
     const {type,date}=body;
     if(!validDate(date))fail(400,'예약 날짜를 확인해 주세요.');
     if(!['personal','team'].includes(type))fail(400,'개인 연습 또는 팀 합주를 선택해 주세요.');
     const start=minutes(body.start),end=minutes(body.end),now=seoulNow(),settings=await getSettings(db);
     if(start<480||end>1440||end<=start)fail(400,'예약은 08:00부터 24:00 사이에 가능합니다.');
     if(date<now.date||(date===now.date&&start<=now.minute))fail(400,'이미 지난 시간은 예약할 수 없습니다.');
-    if(date>addDays(now.date,settings.advanceWeeks*7))fail(400,`예약은 ${settings.advanceWeeks}주 뒤까지 가능합니다.`);
+    if(replaceId===null&&date>addDays(now.date,settings.advanceWeeks*7))fail(400,`예약은 ${settings.advanceWeeks}주 뒤까지 가능합니다.`);
     let ownerMember=member;
     if(body.memberId!==undefined){
       if(typeof body.memberId!=='string'||!body.memberId.trim()||body.memberId.length>100)fail(400,'예약할 멤버를 선택해 주세요.');
@@ -227,7 +237,7 @@ async function createBooking(body,member,req) {
     // Fetch the relevant range once, then validate every date under the DB lock.
     const from=sunday(date),until=addDays(sunday(dates.at(-1)),7);
     const [rows,events]=await Promise.all([
-      db.prepare('SELECT date,start_min,end_min,type,member_id,team_id FROM bookings WHERE date>=? AND date<?').all(from,until),
+      db.prepare('SELECT date,start_min,end_min,type,member_id,team_id FROM bookings WHERE date>=? AND date<? AND id<>?').all(from,until,replaceId??-1),
       db.prepare('SELECT date,start_min,end_min FROM events WHERE date>=? AND date<?').all(from,until)
     ]);
     const own=rows.filter(r=>r.type===type&&(type==='team'?r.team_id===teamId:r.member_id===ownerMember.id));
@@ -250,6 +260,11 @@ async function createBooking(body,member,req) {
       accepted.push(day);
     }
     if(!accepted.length)fail(409,'모든 날짜가 기존 일정과 겹칩니다. 다른 시간을 선택해 주세요.');
+    if(previous){
+      await db.prepare('UPDATE bookings SET member_id=?,team_id=?,series_id=NULL,recurrence_end=NULL WHERE id=?').run(ownerMember.id,teamId,replaceId);
+      await audit(db,member.id,'booking.transfer',{bookingId:replaceId,previousMemberId:previous.member_id,memberId:ownerMember.id,previousTeamId:previous.team_id,teamId});
+      return {booking:await getBooking(replaceId,member)};
+    }
     const values=accepted.flatMap(day=>[ownerMember.id,teamId,type,day,start,end,seriesId,body.repeatUntil||null,member.id]);
     const inserted=await db.prepare('INSERT INTO bookings(member_id,team_id,type,date,start_min,end_min,series_id,recurrence_end,created_by) VALUES '+accepted.map(()=>'(?,?,?,?,?,?,?,?,?)').join(',')+' RETURNING id').all(...values);
     await db.prepare('INSERT INTO audit_log(actor_id,action,details) VALUES '+inserted.map(()=>'(?,?,?)').join(',')).run(...inserted.flatMap(r=>[member.id,'booking.create',JSON.stringify({bookingId:r.id,memberId:ownerMember.id,teamId,date:accepted[inserted.indexOf(r)],start:body.start,end:body.end,type,seriesId})]));
@@ -444,20 +459,21 @@ async function api(req, res, url) {
     const result=await applyImport(db,{members:[{'아이디':body.id,'이름':body.name,'세션':body.session,'기수':body.generation,'전화번호':body.phone,'관리자여부':body.admin===true?'Y':'N'}]},member.id);
     return send(res,200,result);
   }
-  if (path === '/api/teams/update' && method === 'POST') {
+  if (['/api/teams/update','/api/teams/create'].includes(path) && method === 'POST') {
     if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
-    const body=await jsonBody(req),id=Number(body.id);
-    if(!Number.isSafeInteger(id)||id<1)fail(400,'팀 번호를 확인해 주세요.');
+    const body=await jsonBody(req),creating=path==='/api/teams/create';let id=Number(body.id);
+    if(!creating&&(!Number.isSafeInteger(id)||id<1))fail(400,'팀 번호를 확인해 주세요.');
     const name=cleanText(body.name,100).normalize('NFC');
     if(!name||name.includes(','))fail(400,'쉼표 없이 팀 이름을 입력해 주세요.');
     await transaction(async()=>{
       const actor=(await requireMember(req,{admin:true})).member;
-      const before=await db.prepare('SELECT name FROM teams WHERE id=?').get(id);
+      const before=creating?{name:''}:await db.prepare('SELECT name FROM teams WHERE id=?').get(id);
       if(!before)fail(404,'팀을 찾을 수 없습니다.');
-      if(await db.prepare('SELECT id FROM teams WHERE name=? AND id<>?').get(name,id))fail(409,'같은 이름의 팀이 있습니다.');
-      await db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,id);
+      if(await db.prepare('SELECT id FROM teams WHERE name=? AND id<>?').get(name,creating?-1:id))fail(409,'같은 이름의 팀이 있습니다.');
+      if(creating)id=Number((await db.prepare('INSERT INTO teams(name) VALUES (?)').run(name)).lastInsertRowid);
+      else await db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,id);
       await applyImport(db,{teams:[{'팀명':name,...Object.fromEntries(Object.entries({보컬:'vocal',기타1:'guitar1',기타2:'guitar2',베이스:'bass',드럼:'drums',키보드:'keyboard'}).map(([label,slot])=>[label,body.slots?.[slot]||'']))}]},actor.id);
-      await audit(db,actor.id,'team.update',{teamId:id,previousName:before.name,name});
+      await audit(db,actor.id,creating?'team.create':'team.update',{teamId:id,previousName:before.name,name});
     });
     return send(res,200,{ok:true});
   }
@@ -530,6 +546,8 @@ async function api(req, res, url) {
     return send(res, method === 'POST' ? 201 : 200, result);
   }
   if (path === '/api/bookings' && method === 'POST') return send(res, 201, (await createBooking(await jsonBody(req), member, req)));
+  const ownerMatch=path.match(/^\/api\/bookings\/(\d+)\/owner$/);
+  if(ownerMatch&&method==='PATCH')return send(res,200,await createBooking(await jsonBody(req),member,req,Number(ownerMatch[1])));
   const nameMatch=path.match(/^\/api\/bookings\/(\d+)\/name$/);
   if (nameMatch && method === 'PATCH') {
     const body=await jsonBody(req);

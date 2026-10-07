@@ -95,6 +95,28 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     assert.equal(deleted.find(e=>e.action==='event.delete').details.title,'대청소');
     assert.equal((await admin('/bookings?week='+day)).data.bookings.some(b=>b.id===one.id),false);
 
+    assert.equal((await member('/teams/create','POST',{name:'새로 추가'})).status,403);
+    assert.equal((await admin('/teams/create','POST',{name:'새로 추가',slots:{vocal:'vocal'}})).status,200);
+    assert.equal((await admin('/teams/create','POST',{name:'새로 추가'})).status,409);
+    assert.equal((await admin('/teams/create','POST',{name:'실패 팀',slots:{vocal:'없는아이디'}})).status,400);
+    const allTeams=(await admin('/teams')).data.teams;
+    assert.ok(!allTeams.some(t=>t.name==='실패 팀'));assert.equal(allTeams.find(t=>t.name==='새로 추가').members[0].id,'vocal');
+    await admin('/settings','PUT',{specialPolicy:{...settings.specialPolicy,enabled:false}});
+    const ownerDate=add(day,3);
+    const booking=(await admin('/bookings','POST',{type:'personal',memberId:'drummer',date:ownerDate,start:'10:00',end:'11:00'})).data.booking;
+    assert.equal((await member('/bookings/'+booking.id+'/owner','PATCH',{memberId:'vocal'})).status,403);
+    assert.equal((await admin('/bookings/'+booking.id+'/owner','PATCH',{})).status,400);
+    const changed=await admin('/bookings/'+booking.id+'/owner','PATCH',{memberId:'vocal'});
+    assert.equal(changed.status,200,JSON.stringify(changed.data));assert.equal(changed.data.booking.memberId,'vocal');assert.equal(changed.data.booking.createdBy,'admin');
+    const occupied=await admin('/bookings','POST',{type:'personal',memberId:'drummer',date:ownerDate,start:'12:00',end:'12:30'});
+    assert.equal(occupied.status,201);
+    assert.equal((await admin('/bookings/'+booking.id+'/owner','PATCH',{memberId:'drummer'})).status,400);
+    const repeated=await admin('/bookings','POST',{type:'team',teamId:1,date:ownerDate,start:'16:00',end:'17:00',repeatUntil:add(ownerDate,7)});
+    assert.equal(repeated.status,201);
+    const moved=await admin('/bookings/'+repeated.data.booking.id+'/owner','PATCH',{teamId:2});
+    assert.equal(moved.status,200);assert.equal(moved.data.booking.teamId,2);assert.equal(moved.data.booking.seriesId,null);
+    assert.ok((await admin('/activity')).data.entries.some(e=>e.action==='booking.transfer'));
+
   }finally{child.kill('SIGTERM');await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));await rm(dir,{recursive:true,force:true})}
 });
 
