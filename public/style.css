@@ -42,3 +42,5 @@
 .markdown-preview{max-height:none;overflow:visible}
 
 .login-password-wrap{position:relative}.login-password-wrap .field{margin-bottom:20px}.login-password-wrap .password-visibility{position:absolute;right:6px;bottom:4px;margin:0;width:38px;height:38px;min-height:38px;border:0;background:transparent}.login-password-wrap input{padding-right:50px}
+
+.time-cell.past-slot,.time-cell.past-slot:hover{background:#e5e7eb}.time-cell.past-slot:disabled{opacity:1;cursor:not-allowed}.time-cell.past-slot .booking-block{background:#d5d8de;border-color:#9ba2ad;color:#505762}
