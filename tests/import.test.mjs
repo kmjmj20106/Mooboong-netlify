@@ -119,3 +119,14 @@ test('teams-only imports automatically update existing members and preserve othe
   (await applyImport(db,{members:[member({팀:''})]},'admin'));
   assert.deepEqual(names('테스트멤버'),['다른팀']);
 });
+
+test('super administrator owns staff permissions and is protected from imports',async t=>{
+ const db=fixture(t);
+ db.prepare('INSERT INTO members(id,name,password_hash,admin,super_admin) VALUES(?,?,?,?,?)').run('root','최고관리자',hashPassword('root-test-password'),1,1);
+ await applyImport(db,{members:[{아이디:'ordinary',이름:'부원',관리자여부:'N'}]},'admin');
+ for(const row of [{아이디:'ordinary',이름:'부원',관리자여부:'Y'},{아이디:'newadmin',이름:'새운영진',관리자여부:'Y'},{아이디:'root',이름:'변경됨',관리자여부:'Y'},{아이디:'root',이름:'최고관리자',비밀번호:'reset-test',관리자여부:'Y'}])await assert.rejects(applyImport(db,{members:[row]},'admin'));
+ await assert.rejects(applyImport(db,{members:[{아이디:'root',이름:'최고관리자',관리자여부:'N'}]},'root'));
+ await applyImport(db,{members:[{아이디:'ordinary',이름:'부원',관리자여부:'Y'}]},'root');
+ assert.equal(db.prepare('SELECT admin FROM members WHERE id=?').get('ordinary').admin,1);
+ assert.equal(db.prepare('SELECT name FROM members WHERE id=?').get('root').name,'최고관리자');
+});

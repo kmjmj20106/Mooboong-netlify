@@ -113,6 +113,10 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     assert.equal((await admin('/bookings/'+booking.id+'/owner','PATCH',{memberId:'drummer'})).status,400);
     const repeated=await admin('/bookings','POST',{type:'team',teamId:1,date:ownerDate,start:'16:00',end:'17:00',repeatUntil:add(ownerDate,7)});
     assert.equal(repeated.status,201);
+    assert.equal((await member('/bookings/'+repeated.data.booking.id+'/name','PATCH',{name:'변경 금지'})).status,403);
+    assert.equal((await admin('/bookings/'+repeated.data.booking.id+'/name','PATCH',{name:'전체 이름'})).status,200);
+    const renamedSeries=(await admin('/bookings/'+repeated.data.booking.id+'/series')).data.bookings;
+    assert.equal(renamedSeries.length,2);assert.ok(renamedSeries.every(b=>b.displayName==='전체 이름'));
     const moved=await admin('/bookings/'+repeated.data.booking.id+'/owner','PATCH',{teamId:2});
     assert.equal(moved.status,200);assert.equal(moved.data.booking.teamId,2);assert.equal(moved.data.booking.seriesId,null);
     assert.ok((await admin('/activity')).data.entries.some(e=>e.action==='booking.transfer'));
@@ -126,6 +130,20 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     assert.ok((await admin('/schedule?week='+lastDate)).data.bookings.some(b=>b.title==='주간 대청소'&&b.date===lastDate));
     assert.equal((await admin('/events','POST',{...repeatEvent,repeatUntil:add(today,367)})).status,400);
     assert.equal((await admin('/events/'+repeatedEvent.data.event.eventId,'PUT',repeatEvent)).status,400);
+
+    assert.ok(repeatedEvent.data.event.seriesId);
+    assert.equal((await member('/events/'+repeatedEvent.data.event.eventId+'/series','DELETE')).status,403);
+    assert.equal((await admin('/events/'+repeatedEvent.data.event.eventId+'/series')).data.count,2);
+    const bulkDeleted=await admin('/events/'+repeatedEvent.data.event.eventId+'/series','DELETE');assert.equal(bulkDeleted.status,200);assert.equal(bulkDeleted.data.count,2);
+    assert.equal((await admin('/schedule?week='+lastDate)).data.bookings.some(b=>b.title==='주간 대청소'),false);
+    const feedbackOnly=(await admin('/activity?filter=feedback')).data.entries;assert.ok(feedbackOnly.length);assert.ok(feedbackOnly.every(e=>e.action==='feedback'));
+    assert.ok((await admin('/activity?filter=cancellations')).data.entries.some(e=>e.action==='event.delete_series'));
+    assert.equal((await member('/settings','PUT',{allowMultiplePersonalPerDay:true})).status,403);
+    assert.equal((await admin('/settings','PUT',{allowMultiplePersonalPerDay:'yes'})).status,400);
+    assert.equal((await admin('/settings','PUT',{allowMultiplePersonalPerDay:true,personalWeeklyHours:10})).status,200);
+    const extra=await admin('/bookings','POST',{type:'personal',memberId:'drummer',date:ownerDate,start:'13:00',end:'13:30'});assert.equal(extra.status,201,JSON.stringify(extra.data));
+    await admin('/settings','PUT',{allowMultiplePersonalPerDay:false});
+    assert.equal((await admin('/bookings','POST',{type:'personal',memberId:'drummer',date:ownerDate,start:'14:00',end:'14:30'})).status,400);
 
   }finally{child.kill('SIGTERM');await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));await rm(dir,{recursive:true,force:true})}
 });

@@ -168,7 +168,7 @@ const bookingSelect = `SELECT b.*,m.name AS member_name,t.name AS team_name,crea
 const eventSelect = `SELECT e.*,m.name AS creator_name FROM events e JOIN members m ON m.id=e.created_by`;
 function eventView(row, member) {
   return { id: `event-${row.id}`, eventId: row.id, type: 'event', title: row.title, description: row.description,
-    date: row.date, start: toTime(row.start_min), end: toTime(row.end_min),
+    date: row.date, start: toTime(row.start_min), end: toTime(row.end_min),seriesId:row.series_id||null,
     createdBy: row.created_by, createdByName: row.creator_name, canCancel: Boolean(member.admin), canEdit: Boolean(member.admin) };
 }
 async function saveEvent(body, actor, id = null) {
@@ -196,7 +196,7 @@ async function saveEvent(body, actor, id = null) {
   const title=body.title.trim(),description=(body.description||'').trim();
   let ids;
   if(id!==null){await db.prepare('UPDATE events SET title=?,description=?,date=?,start_min=?,end_min=? WHERE id=?').run(title,description,body.date,start,end,id);ids=[id]}
-  else {const rows=await db.prepare('INSERT INTO events(title,description,date,start_min,end_min,created_by) VALUES '+accepted.map(()=>'(?,?,?,?,?,?)').join(',')+' RETURNING id').all(...accepted.flatMap(date=>[title,description,date,start,end,actor.id]));ids=rows.map(r=>r.id)}
+  else {const series=body.repeatUntil?randomToken():null;const rows=await db.prepare('INSERT INTO events(title,description,date,start_min,end_min,created_by,series_id) VALUES '+accepted.map(()=>'(?,?,?,?,?,?,?)').join(',')+' RETURNING id').all(...accepted.flatMap(date=>[title,description,date,start,end,actor.id,series]));ids=rows.map(r=>r.id)}
   await audit(db,actor.id,id!==null?'event.update':'event.create',{eventId:ids[0],eventIds:ids,dates:accepted,repeatUntil:body.repeatUntil||null});
   return {event:eventView(await db.prepare(`${eventSelect} WHERE e.id=?`).get(ids[0]),actor),count:ids.length,skipped};
 }
@@ -260,7 +260,7 @@ async function createBooking(body,member,req,replaceId=null) {
       if(body.skipConflicts===true && seriesId && (rows.some(collision)||events.some(collision))){skipped.push({date:day,reason:'기존 예약 또는 일정과 겹침'});continue;}
       if(rows.some(collision))fail(409,`${day}: 다른 예약과 시간이 겹칩니다. 빈 시간을 다시 선택해 주세요.`);
       if(events.some(collision))fail(409,`${day}: 커스텀 일정이 있는 시간입니다. 다른 시간을 선택해 주세요.`);
-      if(type==='personal'&&own.some(r=>r.date===day))fail(400,`${day}: 개인 연습은 같은 사람 명의로 하루 한 번만 예약할 수 있습니다. 기존 예약을 취소한 뒤 다시 예약해 주세요.`);
+      if(type==='personal'&&!settings.allowMultiplePersonalPerDay&&own.some(r=>r.date===day))fail(400,`${day}: 개인 연습은 같은 사람 명의로 하루 한 번만 예약할 수 있습니다. 기존 예약을 취소한 뒤 다시 예약해 주세요.`);
       const week=sunday(day),next=addDays(week,7);
       const used=own.filter(r=>r.date>=week&&r.date<next).reduce((n,r)=>n+r.end_min-r.start_min,0);
       if(used+end-start>limit)fail(400,`${day}: ${type==='team'?'팀':'개인'} 주간 예약 한도 ${limit/60}시간을 초과합니다.`);
@@ -448,7 +448,7 @@ async function api(req, res, url) {
   }
   if(path==='/api/activity'&&method==='GET'){
     if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
-    const rows=await db.prepare(`SELECT a.id,a.action,a.details,a.created_at,m.name AS actor_name FROM audit_log a LEFT JOIN members m ON m.id=a.actor_id WHERE (?=0 OR a.action IN ('booking.cancel','booking.cancel_series','event.delete')) ORDER BY a.id DESC LIMIT 100`).all(url.searchParams.get('filter')==='cancellations'?1:0);
+    const rows=await db.prepare(`SELECT a.id,a.action,a.details,a.created_at,m.name AS actor_name FROM audit_log a LEFT JOIN members m ON m.id=a.actor_id WHERE (?='all' OR (?='cancellations' AND a.action IN ('booking.cancel','booking.cancel_series','event.delete','event.delete_series')) OR (?='feedback' AND a.action='feedback')) ORDER BY a.id DESC LIMIT 100`).all(...Array(3).fill(['cancellations','feedback'].includes(url.searchParams.get('filter'))?url.searchParams.get('filter'):'all'));
     return send(res,200,{entries:rows.map(r=>({...r,details:JSON.parse(r.details)}))});
   }
   if (path === '/api/profile' && method === 'PATCH') {
@@ -518,6 +518,7 @@ async function api(req, res, url) {
       if (typeof body.operatorPassword !== 'string' || body.operatorPassword.length > 128 || !verifyPassword(body.operatorPassword, current.member.password_hash)) fail(403, '운영진 본인의 현재 비밀번호를 확인해 주세요.');
       const target = await db.prepare('SELECT * FROM members WHERE id=?').get(targetId);
       if (!target) fail(404, '멤버를 찾을 수 없습니다.');
+      if(target.super_admin)fail(403,'최고 관리자 비밀번호는 본인만 변경할 수 있습니다.');
       if (verifyPassword(body.newPassword, target.password_hash)) fail(400, '기존 비밀번호와 다른 임시 비밀번호를 입력해 주세요.');
       await db.prepare("UPDATE members SET password_hash=?,must_change_password=1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(hashPassword(body.newPassword), targetId);
       const oldSessions = await db.prepare('SELECT token_hash FROM sessions WHERE member_id=?').all(targetId);
@@ -535,6 +536,18 @@ async function api(req, res, url) {
   if (path === '/api/teams' && method === 'GET') {const teams=await teamList();return send(res,200,{teams:member.admin?teams:teams.filter(t=>t.members.some(m=>m.id===member.id))});}
   if (['/api/bookings','/api/schedule'].includes(path) && method === 'GET') {
     return send(res, 200, await scheduleData(member, url.searchParams.get('week'), path === '/api/schedule'));
+  }
+  const eventSeries=path.match(/^\/api\/events\/(\d+)\/series$/);
+  if(eventSeries&&['GET','DELETE'].includes(method)){
+    if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
+    const result=await transaction(async()=>{
+      const actor=(await requireMember(req,{admin:true})).member;
+      const event=await db.prepare('SELECT series_id FROM events WHERE id=?').get(Number(eventSeries[1]));
+      if(!event?.series_id)fail(404,'반복 일정 묶음을 찾을 수 없습니다.');
+      const rows=await db.prepare('SELECT id,title,date,start_min,end_min FROM events WHERE series_id=? ORDER BY date').all(event.series_id);
+      if(method==='DELETE'){await db.prepare('DELETE FROM events WHERE series_id=?').run(event.series_id);await audit(db,actor.id,'event.delete_series',{seriesId:event.series_id,count:rows.length,events:rows});}
+      return {count:rows.length,dates:rows.map(r=>r.date)};
+    });return send(res,200,result);
   }
   const eventMatch = path.match(/^\/api\/events\/(\d+)$/);
   if ((path === '/api/events' && method === 'POST') || (eventMatch && ['PUT', 'DELETE'].includes(method))) {
@@ -565,11 +578,11 @@ async function api(req, res, url) {
     const id=Number(nameMatch[1]);
     await transaction(async()=>{
       const actor=(await requireMember(req,{admin:true})).member;
-      const before=await db.prepare('SELECT display_name FROM bookings WHERE id=?').get(id);
+      const before=await db.prepare('SELECT display_name,series_id FROM bookings WHERE id=?').get(id);
       if(!before)fail(404,'예약을 찾을 수 없습니다.');
       const name=body.name.trim();
-      await db.prepare('UPDATE bookings SET display_name=? WHERE id=?').run(name,id);
-      await audit(db,actor.id,'booking.rename',{bookingId:id,previousName:before.display_name,name});
+      const changed=before.series_id?await db.prepare('UPDATE bookings SET display_name=? WHERE series_id=? RETURNING id').all(name,before.series_id):await db.prepare('UPDATE bookings SET display_name=? WHERE id=? RETURNING id').all(name,id);
+      await audit(db,actor.id,'booking.rename',{bookingId:id,bookingIds:changed.map(r=>r.id),seriesId:before.series_id,count:changed.length,previousName:before.display_name,name});
     });
     return send(res,200,{booking:await getBooking(id,member)});
   }
@@ -660,6 +673,7 @@ async function api(req, res, url) {
       if (!Number.isInteger(body.advanceWeeks) || body.advanceWeeks < 1 || body.advanceWeeks > 52) fail(400, '예약 가능 범위는 1~52주로 입력해 주세요.');
       settings.advanceWeeks = body.advanceWeeks;
     }
+    if(body.allowMultiplePersonalPerDay!==undefined){if(typeof body.allowMultiplePersonalPerDay!=='boolean')fail(400,'개인 연습 횟수 설정을 확인해 주세요.');settings.allowMultiplePersonalPerDay=body.allowMultiplePersonalPerDay;}
     if(body.blockSameDayCancellation!==undefined){if(typeof body.blockSameDayCancellation!=='boolean')fail(400,'당일 취소 제한 설정을 확인해 주세요.');settings.blockSameDayCancellation=body.blockSameDayCancellation;}
     if (body.recurringUntil !== undefined) {
       if (body.recurringUntil !== '' && !validDate(body.recurringUntil)) fail(400, '정기예약 종료일을 확인해 주세요.');

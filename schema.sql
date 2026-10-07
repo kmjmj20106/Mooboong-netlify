@@ -103,3 +103,11 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT
 ALTER TABLE team_members DROP CONSTRAINT IF EXISTS team_members_slot_check;
 ALTER TABLE team_members ADD CONSTRAINT team_members_slot_check CHECK(slot IN ('vocal','guitar1','guitar2','bass','drums','keyboard') OR slot LIKE 'vocal:%' OR slot LIKE 'guitar1:%' OR slot LIKE 'guitar2:%' OR slot LIKE 'bass:%' OR slot LIKE 'drums:%' OR slot LIKE 'keyboard:%');
 CREATE INDEX IF NOT EXISTS audit_log_action_created ON audit_log(action,created_at);
+
+ALTER TABLE members ADD COLUMN IF NOT EXISTS super_admin INTEGER NOT NULL DEFAULT 0 CHECK(super_admin IN (0,1));
+UPDATE members SET super_admin=1,admin=1 WHERE id='mooboong' AND name='김무붕';
+
+ALTER TABLE events ADD COLUMN IF NOT EXISTS series_id TEXT;
+UPDATE events e SET series_id='legacy-event-'||a.id FROM audit_log a
+WHERE a.action='event.create' AND a.details::jsonb->>'repeatUntil' IS NOT NULL
+AND e.series_id IS NULL AND e.id::text IN (SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(a.details::jsonb->'eventIds')='array' THEN a.details::jsonb->'eventIds' ELSE '[]'::jsonb END));
