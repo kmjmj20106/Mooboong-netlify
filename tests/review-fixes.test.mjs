@@ -117,6 +117,16 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     assert.equal(moved.status,200);assert.equal(moved.data.booking.teamId,2);assert.equal(moved.data.booking.seriesId,null);
     assert.ok((await admin('/activity')).data.entries.some(e=>e.action==='booking.transfer'));
 
+    const firstDate=add(day,4),lastDate=add(day,18),repeatEvent={title:'주간 대청소',date:firstDate,start:'20:00',end:'21:00',repeatUntil:lastDate};
+    assert.equal((await member('/events','POST',repeatEvent)).status,403);
+    const blocker=await admin('/events','POST',{title:'기존 일정',date:add(firstDate,7),start:'20:00',end:'21:00'});assert.equal(blocker.status,201);
+    assert.equal((await admin('/events','POST',repeatEvent)).status,409);
+    assert.equal((await admin('/schedule?week='+firstDate)).data.bookings.some(b=>b.title==='주간 대청소'),false,'conflict rolls back all dates');
+    const repeatedEvent=await admin('/events','POST',{...repeatEvent,skipConflicts:true});assert.equal(repeatedEvent.status,201,JSON.stringify(repeatedEvent.data));assert.equal(repeatedEvent.data.count,2);assert.deepEqual(repeatedEvent.data.skipped,[add(firstDate,7)]);
+    assert.ok((await admin('/schedule?week='+lastDate)).data.bookings.some(b=>b.title==='주간 대청소'&&b.date===lastDate));
+    assert.equal((await admin('/events','POST',{...repeatEvent,repeatUntil:add(today,367)})).status,400);
+    assert.equal((await admin('/events/'+repeatedEvent.data.event.eventId,'PUT',repeatEvent)).status,400);
+
   }finally{child.kill('SIGTERM');await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));await rm(dir,{recursive:true,force:true})}
 });
 

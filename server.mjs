@@ -175,20 +175,30 @@ async function saveEvent(body, actor, id = null) {
   if (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 100) fail(400, '일정 제목은 1~100자로 입력해 주세요.');
   if (body.description !== undefined && (typeof body.description !== 'string' || body.description.length > 2000)) fail(400, '일정 설명은 2,000자 이내로 입력해 주세요.');
   if (!validDate(body.date)) fail(400, '일정 날짜를 확인해 주세요.');
-  if (body.repeatUntil) fail(400, '커스텀 일정은 날짜별로 등록해 주세요.');
+  const dates=[body.date];
+  if(body.repeatUntil){
+    if(id!==null)fail(400,'반복 등록은 새 일정에서만 가능합니다. 기존 일정은 날짜별로 수정해 주세요.');
+    if(!validDate(body.repeatUntil)||body.repeatUntil<body.date||body.repeatUntil>addDays(seoulNow().date,366))fail(400,'반복 종료일은 시작일부터 최대 1년 이내로 선택해 주세요.');
+    for(let day=addDays(body.date,7);day<=body.repeatUntil;day=addDays(day,7))dates.push(day);
+  }
   const start = minutes(body.start), end = minutes(body.end), now = seoulNow();
   if (start < 480 || end > 1440 || end <= start) fail(400, '일정은 08:00부터 24:00 사이에 등록할 수 있습니다.');
   if (body.date < now.date || (body.date === now.date && start <= now.minute)) fail(400, '이미 지난 시간에는 일정을 등록할 수 없습니다.');
   if (body.date > addDays(now.date, 366)) fail(400, '커스텀 일정은 최대 1년 뒤까지 등록할 수 있습니다.');
   if (id !== null && !await db.prepare('SELECT id FROM events WHERE id=?').get(id)) fail(404, '일정을 찾을 수 없습니다.');
-  if (await db.prepare('SELECT id FROM bookings WHERE date=? AND start_min<? AND end_min>?').get(body.date, end, start)) fail(409, '기존 예약과 시간이 겹칩니다. 예약을 확인한 뒤 빈 시간에 등록해 주세요.');
-  if (await db.prepare('SELECT id FROM events WHERE date=? AND start_min<? AND end_min>? AND id<>?').get(body.date, end, start, id ?? -1)) fail(409, '다른 커스텀 일정과 시간이 겹칩니다.');
-  const values = [body.title.trim(), (body.description || '').trim(), body.date, start, end];
-  const editing = id !== null;
-  if (editing) await db.prepare('UPDATE events SET title=?,description=?,date=?,start_min=?,end_min=? WHERE id=?').run(...values, id);
-  else id = Number((await db.prepare('INSERT INTO events(title,description,date,start_min,end_min,created_by) VALUES (?,?,?,?,?,?)').run(...values, actor.id)).lastInsertRowid);
-  await audit(db, actor.id, editing ? 'event.update' : 'event.create', { eventId: id });
-  return eventView(await db.prepare(`${eventSelect} WHERE e.id=?`).get(id), actor);
+  const [bookings,events]=await Promise.all([
+    db.prepare('SELECT date FROM bookings WHERE date>=? AND date<=? AND start_min<? AND end_min>?').all(body.date,dates.at(-1),end,start),
+    db.prepare('SELECT date FROM events WHERE date>=? AND date<=? AND start_min<? AND end_min>? AND id<>?').all(body.date,dates.at(-1),end,start,id??-1)
+  ]);
+  const blocked=new Set([...bookings,...events].map(r=>r.date)),accepted=[],skipped=[];
+  for(const date of dates){if(blocked.has(date)){if(body.repeatUntil&&body.skipConflicts===true){skipped.push(date);continue}fail(409,`${date}: 기존 예약 또는 커스텀 일정과 시간이 겹칩니다.`)}accepted.push(date)}
+  if(!accepted.length)fail(409,'모든 날짜가 기존 예약 또는 일정과 겹칩니다.');
+  const title=body.title.trim(),description=(body.description||'').trim();
+  let ids;
+  if(id!==null){await db.prepare('UPDATE events SET title=?,description=?,date=?,start_min=?,end_min=? WHERE id=?').run(title,description,body.date,start,end,id);ids=[id]}
+  else {const rows=await db.prepare('INSERT INTO events(title,description,date,start_min,end_min,created_by) VALUES '+accepted.map(()=>'(?,?,?,?,?,?)').join(',')+' RETURNING id').all(...accepted.flatMap(date=>[title,description,date,start,end,actor.id]));ids=rows.map(r=>r.id)}
+  await audit(db,actor.id,id!==null?'event.update':'event.create',{eventId:ids[0],eventIds:ids,dates:accepted,repeatUntil:body.repeatUntil||null});
+  return {event:eventView(await db.prepare(`${eventSelect} WHERE e.id=?`).get(ids[0]),actor),count:ids.length,skipped};
 }
 async function getBooking(id, member) { const row = (await db.prepare(`${bookingSelect} WHERE b.id=?`).get(id)); return row ? (await bookingView(row, member)) : null; }
 async function createBooking(body,member,req,replaceId=null) {
@@ -541,7 +551,7 @@ async function api(req, res, url) {
         await audit(db, current.member.id, 'event.delete', { eventId:id,title:before.title,date:before.date,start:toTime(before.start_min),end:toTime(before.end_min) });
         return { ok: true };
       }
-      return { event: await saveEvent(body, current.member, id) };
+      return await saveEvent(body, current.member, id);
     });
     return send(res, method === 'POST' ? 201 : 200, result);
   }

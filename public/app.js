@@ -109,7 +109,7 @@ function eventModal(event=null){
   if(!S.me?.admin)return;
   const date=event?.date||(S.week>today()?S.week:today());
   const options=Array.from({length:33},(_,i)=>{const mins=480+i*30,t=String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0');return [t,t]});
-  showModal(event?'커스텀 일정 수정':'커스텀 일정 추가',`<form id="event-form" data-id="${event?.eventId||''}">${button('선택한 주의 전체 시간표','show-calendar-preview','calendar-preview-button','calendar-days')}<div class="form-grid">${field('일정 제목','title','required maxlength="100" placeholder="예: 합주실 대청소, 신입 부원 면접"',event?.title||'',true)}${field('날짜','event-date',`type="date" required min="${today()}" max="${addDays(today(),366)}"`,date,true)}${select('시작 시간','start',options.slice(0,-1),event?.start||'18:00')}${select('종료 시간','end',options.slice(1),event?.end||'20:00')}<div class="field full"><label for="description">설명 (선택)</label><textarea id="description" name="description" maxlength="2000" placeholder="준비물이나 안내할 내용을 입력해 주세요.">${esc(event?.description||'')}</textarea></div></div><div class="info-strip">${icon('info')}운영진만 관리할 수 있어요. 해당 시간의 예약을 막으며 개인·팀 연습 한도에는 포함되지 않습니다. 08:00–24:00 전체를 선택하면 하루를 비워둘 수 있어요.</div><div class="inline-error" role="alert"></div><div class="modal-actions">${button('취소','close-modal')}<button class="btn primary" type="submit">${event?'변경 저장':'일정 추가'}</button></div></form>`,'',true);
+  showModal(event?'커스텀 일정 수정':'커스텀 일정 추가',`<form id="event-form" data-id="${event?.eventId||''}">${button('선택한 주의 전체 시간표','show-calendar-preview','calendar-preview-button','calendar-days')}<div class="form-grid">${field('일정 제목','title','required maxlength="100" placeholder="예: 합주실 대청소, 신입 부원 면접"',event?.title||'',true)}${field('날짜','event-date',`type="date" required min="${today()}" max="${addDays(today(),366)}"`,date,true)}${select('시작 시간','start',options.slice(0,-1),event?.start||'18:00')}${select('종료 시간','end',options.slice(1),event?.end||'20:00')}${!event?`<div class="field full"><label class="check-field"><input type="checkbox" id="event-repeat">같은 요일·시간으로 매주 반복</label><div id="event-repeat-fields" hidden><label for="event-repeat-until">마지막 일정 날짜 (해당 날짜 포함)</label><input id="event-repeat-until" name="repeatUntil" type="date" min="${date}" max="${addDays(today(),366)}" disabled><label class="check-field"><input type="checkbox" name="skipConflicts">겹치는 날짜는 제외하고 등록</label><small>등록 후 수정·삭제는 날짜별로 진행합니다.</small></div></div>`:''}<div class="field full"><label for="description">설명 (선택)</label><textarea id="description" name="description" maxlength="2000" placeholder="준비물이나 안내할 내용을 입력해 주세요.">${esc(event?.description||'')}</textarea></div></div><div class="info-strip">${icon('info')}운영진만 관리할 수 있어요. 해당 시간의 예약을 막으며 개인·팀 연습 한도에는 포함되지 않습니다. 08:00–24:00 전체를 선택하면 하루를 비워둘 수 있어요.</div><div class="inline-error" role="alert"></div><div class="modal-actions">${button('취소','close-modal')}<button class="btn primary" type="submit">${event?'변경 저장':'일정 추가'}</button></div></form>`,'',true);
 }
 function renderPosts(){$('#main').innerHTML=pageHead('NOTICE','공지','동아리 소식과 장비 사용법을 Markdown으로 작성하고 확인하세요.',S.me.admin?button('Markdown 가져오기','markdown-import','','file-up')+button('노션 가져오기','notion-import','','file-up')+button('공지 작성','new-post','primary','plus'):'')+`<div class="toolbar"><div class="search">${icon('search')}<input id="post-search" aria-label="공지 검색" placeholder="제목이나 내용을 검색하세요"></div><span class="tag">전체 ${S.posts.length}개 글</span></div><div id="post-list">${postCards(S.posts)}</div>`;icons()}
 
@@ -247,6 +247,7 @@ document.addEventListener('click',async e=>{
   }catch(err){toast(err.message);if(a==='commit-upload'&&S.me&&S.route==='members')renderMembers()}
 });
 document.addEventListener('change',e=>{
+  if(e.target.id==='event-repeat'){const yes=e.target.checked;$('#event-repeat-fields').hidden=!yes;$('#event-repeat-until').disabled=!yes;$('#event-repeat-until').required=yes;}
   if(e.target.id==='markdown-archive-file'){S.markdownArchive=e.target.files[0];S.markdownFolder=null;$('#markdown-page-selector').innerHTML='';}
   if(e.target.id==='markdown-folder'){S.markdownFolder=[...e.target.files];S.markdownArchive=null;$('#markdown-page-selector').innerHTML='';}
   if(e.target.id==='markdown-file'&&e.target.files[0])importMarkdown(e.target.files[0]);
@@ -290,7 +291,8 @@ document.addEventListener('submit',async e=>{
     }
     else if(form==='event-form'){
       data.date=data['event-date'];delete data['event-date'];
-      await api('/events'+(f.dataset.id?'/'+f.dataset.id:''),{method:f.dataset.id?'PUT':'POST',body:data});closeModal();S.week=sunday(data.date);await navigate();toast(f.dataset.id?'일정을 수정했습니다.':'일정을 등록했습니다.');
+      data.skipConflicts=data.skipConflicts==='on';
+      const result=await api('/events'+(f.dataset.id?'/'+f.dataset.id:''),{method:f.dataset.id?'PUT':'POST',body:data});closeModal();S.week=sunday(data.date);await navigate();toast(f.dataset.id?'일정을 수정했습니다.':`일정 ${result.count||1}건을 등록했습니다.${result.skipped?.length?' 충돌 '+result.skipped.length+'건 제외':''}`);
     }
     else if(form==='post-form'){
       const files=[...$('#post-files').files];if(files.some(x=>x.size>10*1024*1024))throw new Error('첨부파일은 각각 10MB 이하로 선택해 주세요.');if(files.length+(S.viewPost?.attachments?.length||0)>5)throw new Error('게시물당 파일은 최대 5개입니다.');
