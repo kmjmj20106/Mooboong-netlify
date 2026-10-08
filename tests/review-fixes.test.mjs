@@ -63,7 +63,8 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     assert.equal((await guest('/teams')).status,401);assert.equal((await member('/teams')).data.teams.length,1);
     assert.equal((await member('/directory')).status,403);assert.equal((await admin('/directory')).data.members.length,3);
     assert.equal((await member('/members/update','POST',{id:'admin',name:'oops',admin:true})).status,403);
-    assert.equal((await member('/profile','PATCH',{name:'새 이름',admin:true,id:'admin'})).data.member.admin,false);
+    assert.equal((await member('/profile','PATCH',{name:'새 이름',admin:true,id:'admin'})).status,403);
+    assert.equal((await member('/profile','PATCH',{name:'새 이름'})).status,400);
     assert.equal((await member('/me')).data.member.id,'drummer');
     assert.equal((await admin('/teams/update','POST',{id:1,name:'새 팀',slots:{vocal:'vocal',drums:'drummer\nadmin'}})).status,200);
     const team=(await admin('/teams')).data.teams.find(t=>t.id===1);assert.equal(team.members.length,3);assert.equal(team.name,'새 팀');
@@ -144,6 +145,13 @@ test('review HTTP: member editing, team identity, special rules, conflict skippi
     const extra=await admin('/bookings','POST',{type:'personal',memberId:'drummer',date:ownerDate,start:'13:00',end:'13:30'});assert.equal(extra.status,201,JSON.stringify(extra.data));
     await admin('/settings','PUT',{allowMultiplePersonalPerDay:false});
     assert.equal((await admin('/bookings','POST',{type:'personal',memberId:'drummer',date:ownerDate,start:'14:00',end:'14:30'})).status,400);
+
+    assert.equal((await member('/profile','PATCH',{id:'renamed',currentPassword:'wrong'})).status,403);
+    assert.equal((await member('/profile','PATCH',{id:'admin',currentPassword:'test-member-password'})).status,409);
+    assert.equal((await member('/profile','PATCH',{id:'renamed',currentPassword:'test-member-password',name:'should-not-change',admin:true})).status,200);
+    assert.equal((await member('/me')).status,401);
+    assert.equal((await member('/login','POST',{id:'drummer',password:'test-member-password'})).status,401);
+    const relogged=await member('/login','POST',{id:'renamed',password:'test-member-password'});assert.equal(relogged.status,200);assert.equal(relogged.data.member.name,'drummer');assert.equal(relogged.data.member.admin,false);
 
   }finally{child.kill('SIGTERM');await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));await rm(dir,{recursive:true,force:true})}
 });

@@ -1,3 +1,4 @@
+import {changeMemberId} from './lib/member-id.mjs';
 import {reservationPolicy,validatePolicies} from './lib/booking-policy.mjs';
 import http from 'node:http';
 import { seedGuides } from './lib/guides.mjs';
@@ -453,14 +454,18 @@ async function api(req, res, url) {
   }
   if (path === '/api/profile' && method === 'PATCH') {
     const body=await jsonBody(req);
-    const name=cleanText(body.name,100).normalize('NFC');
-    if(!name)fail(400,'이름을 입력해 주세요.');
+    if(typeof body.id!=='string')fail(400,'새 로그인 아이디를 입력해 주세요. 이름은 운영진만 수정할 수 있습니다.');
+    const id=body.id.trim().normalize('NFC');
+    if(!/^[\p{L}\p{N}_.-]{1,100}$/u.test(id))fail(400,'아이디는 한글·영문·숫자·밑줄·마침표·하이픈으로 1~100자 입력해 주세요.');
     await transaction(async()=>{
       const actor=(await requireMember(req)).member;
-      await db.prepare("UPDATE members SET name=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(name,actor.id);
-      await audit(db,actor.id,'profile.update',{name});
+      if(typeof body.currentPassword!=='string'||body.currentPassword.length>128||!verifyPassword(body.currentPassword,actor.password_hash))fail(403,'현재 비밀번호를 확인해 주세요.');
+      if(id===actor.id)fail(400,'현재 아이디와 다른 아이디를 입력해 주세요.');
+      const sessions=await db.prepare('SELECT token_hash FROM sessions WHERE member_id=?').all(actor.id);
+      await changeMemberId(db,actor,id);
+      for(const session of sessions)await removeUploads(session.token_hash);
     });
-    return send(res,200,{member:await safeMember(await db.prepare('SELECT * FROM members WHERE id=?').get(member.id))});
+    clearSession(res);return send(res,200,{ok:true,id,loggedOut:true});
   }
   if (path === '/api/members/update' && method === 'POST') {
     if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
