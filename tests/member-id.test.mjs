@@ -18,3 +18,12 @@ for(const dialect of ['sqlite','postgres'])test(`${dialect}: ID change preserves
  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM sessions').get()).n,0);assert.equal(JSON.parse((await db.prepare("SELECT value FROM settings WHERE key='quotaOverrides'").get()).value)[0].id,'new');
  }finally{if(engine)await engine.close();else{db.close();await rm(dir,{recursive:true,force:true})}}
 });
+
+test('guide revision migration tolerates multiple legacy copies and preserves later edits',async()=>{
+ const {seedGuides}=await import('../lib/guides.mjs');const dir=await mkdtemp(join(tmpdir(),'mooboong-guide-')),db=wrapSqlite(openDatabase(dir));
+ try{db.prepare("INSERT INTO members(id,name,password_hash,admin) VALUES('a','운영진','hash',1)").run();
+ for(const key of ['member-guide-v2','member-guide-v3'])db.prepare("INSERT INTO posts(kind,title,body,author_id,system_key) VALUES('notice','안내','기존','a',?)").run(key);
+ await seedGuides(db);assert.equal(db.prepare("SELECT count(*) n FROM posts WHERE system_key='member-guide-v4'").get().n,1);
+ db.prepare("UPDATE posts SET body='직접 수정한 안내' WHERE system_key='member-guide-v4'").run();await seedGuides(db);assert.equal(db.prepare("SELECT body FROM posts WHERE system_key='member-guide-v4'").get().body,'직접 수정한 안내');
+ }finally{db.close();await rm(dir,{recursive:true,force:true})}
+});
