@@ -60,3 +60,8 @@
 .calendar-grid .booking-block.compact strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .calendar-grid .booking-block.compact>span{display:none}
 .calendar-grid .past-slot .booking-block{background:#d5d8de;border-color:#9ba2ad;color:#505762}
+
+/* Keep the reservation title centered at every duration and viewport size. */
+.calendar-grid .booking-block{display:flex;align-items:center;justify-content:center;text-align:center;padding:2px}
+.calendar-grid .booking-block strong,.calendar:not(.zoom) .booking-block strong{width:100%;min-width:0;margin:0;font-size:13px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:600px){.calendar-grid .booking-block strong,.calendar:not(.zoom) .booking-block strong{font-size:11px}}
