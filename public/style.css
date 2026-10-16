@@ -53,3 +53,10 @@
   #calendar-popup .modal{max-height:none;overflow:visible;flex-shrink:0}
   #calendar-popup .booking-calendar{max-height:none;overflow:visible}
 }
+
+/* Stable colors identify booking owners; short slots keep just their title. */
+.calendar-grid .booking-block{background:hsl(var(--booking-hue) 78% 92%);border-left-color:hsl(var(--booking-hue) 58% 48%);color:hsl(var(--booking-hue) 48% 27%)}
+.calendar-grid .booking-block.compact{display:flex;align-items:center;padding-top:0;padding-bottom:0}
+.calendar-grid .booking-block.compact strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.calendar-grid .booking-block.compact>span{display:none}
+.calendar-grid .past-slot .booking-block{background:#d5d8de;border-color:#9ba2ad;color:#505762}
