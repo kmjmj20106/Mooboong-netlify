@@ -313,6 +313,22 @@ test('real HTTP: setup, XLSX import, access control, booking rules and persisten
     }
     assert.equal((await admin('/api/events', 'POST', {...eventBody,date,start:'13:00',end:'14:00'})).status, 409, 'events cannot replace existing bookings');
     const usageBeforeEvent = (await admin('/api/bookings?week='+eventBody.date)).body.usage;
+    const recurringEvent=await admin('/api/events','POST',{...eventBody,date:day(60),repeatUntil:day(74),title:'반복 수정 대상'});
+    assert.equal(recurringEvent.status,201);
+    const recurringPath='/api/events/'+recurringEvent.body.event.eventId+'/series';
+    assert.equal((await guest(recurringPath,'PATCH',{title:'불가',description:''})).status,401);
+    assert.equal((await member(recurringPath,'PATCH',{title:'불가',description:''})).status,403);
+    assert.equal((await admin(recurringPath,'PATCH',{title:' ',description:''})).status,400);
+    const beforeEdit=(await admin('/api/bookings?week='+day(60))).body.bookings.find(x=>x.eventId===recurringEvent.body.event.eventId);
+    const updatedSeries=await admin(recurringPath,'PATCH',{title:'베이스교실(강수연)',description:'조해민',date:day(80),start:'08:00'});
+    assert.equal(updatedSeries.status,200);assert.equal(updatedSeries.body.count,3);
+    for(const offset of [60,67,74]){
+      const changed=(await admin('/api/bookings?week='+day(offset))).body.bookings.find(x=>x.seriesId===recurringEvent.body.event.seriesId);
+      assert.equal(changed.title,'베이스교실(강수연)');assert.equal(changed.description,'조해민');
+      assert.equal(changed.date,day(offset));assert.equal(changed.start,eventBody.start);assert.equal(changed.end,eventBody.end);
+      assert.equal(changed.createdBy,beforeEdit.createdBy);
+    }
+    assert.equal((await admin(recurringPath,'DELETE')).body.count,3);
     const event = await admin('/api/events', 'POST', eventBody);
     assert.equal(event.status, 201, JSON.stringify(event.body));
     const eventId = event.body.event.eventId, eventPath = '/api/events/'+eventId;

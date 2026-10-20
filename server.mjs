@@ -543,14 +543,25 @@ async function api(req, res, url) {
     return send(res, 200, await scheduleData(member, url.searchParams.get('week'), path === '/api/schedule'));
   }
   const eventSeries=path.match(/^\/api\/events\/(\d+)\/series$/);
-  if(eventSeries&&['GET','DELETE'].includes(method)){
+  if(eventSeries&&['GET','DELETE','PATCH'].includes(method)){
     if(!member.admin)fail(403,'운영진만 사용할 수 있습니다.');
+    const body=method==='PATCH'?await jsonBody(req):null;
+    if(method==='PATCH'){
+      if(!body||typeof body!=='object')fail(400,'수정할 내용을 확인해 주세요.');
+      if(typeof body.title!=='string'||!body.title.trim()||body.title.length>100)fail(400,'일정 제목은 1~100자로 입력해 주세요.');
+      if(typeof body.description!=='string'||body.description.length>2000)fail(400,'일정 설명은 2,000자 이내로 입력해 주세요.');
+    }
     const result=await transaction(async()=>{
       const actor=(await requireMember(req,{admin:true})).member;
       const event=await db.prepare('SELECT series_id FROM events WHERE id=?').get(Number(eventSeries[1]));
       if(!event?.series_id)fail(404,'반복 일정 묶음을 찾을 수 없습니다.');
-      const rows=await db.prepare('SELECT id,title,date,start_min,end_min FROM events WHERE series_id=? ORDER BY date').all(event.series_id);
+      const rows=await db.prepare('SELECT id,title,description,date,start_min,end_min FROM events WHERE series_id=? ORDER BY date').all(event.series_id);
       if(method==='DELETE'){await db.prepare('DELETE FROM events WHERE series_id=?').run(event.series_id);await audit(db,actor.id,'event.delete_series',{seriesId:event.series_id,count:rows.length,events:rows});}
+      if(method==='PATCH'){
+        const title=body.title.trim(),description=body.description.trim();
+        await db.prepare('UPDATE events SET title=?,description=? WHERE series_id=?').run(title,description,event.series_id);
+        await audit(db,actor.id,'event.update_series',{seriesId:event.series_id,count:rows.length,title,description,before:rows});
+      }
       return {count:rows.length,dates:rows.map(r=>r.date)};
     });return send(res,200,result);
   }
