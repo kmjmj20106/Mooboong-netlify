@@ -77,3 +77,12 @@
   #main-calendar .day-head:first-child,#calendar-popup .day-head:first-child{left:0;z-index:7}
   #main-calendar .booking-block strong{font-size:12px}
 }
+
+/* Wrap long reservation names instead of replacing them with an ellipsis. */
+.calendar-grid .booking-block strong,
+.calendar:not(.zoom) .booking-block strong,
+.calendar-grid .booking-block.compact strong{
+  white-space:normal;word-break:break-all;overflow-wrap:anywhere;
+  text-overflow:clip;line-height:1.2;max-height:100%;
+}
+#main-calendar .booking-block.compact strong{font-size:11px;line-height:12px}
