@@ -65,3 +65,15 @@
 .calendar-grid .booking-block{display:flex;align-items:center;justify-content:center;text-align:center;padding:2px}
 .calendar-grid .booking-block strong,.calendar:not(.zoom) .booking-block strong{width:100%;min-width:0;margin:0;font-size:13px;font-weight:800;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:600px){.calendar-grid .booking-block strong,.calendar:not(.zoom) .booking-block strong{font-size:11px}}
+
+/* Four day columns plus a pinned time column on phones. */
+.calendar-mobile-nav{display:none}
+@media(max-width:700px){
+  .calendar-mobile-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;font-size:12px;color:var(--muted)}
+  .calendar-tools .legend{display:none}
+  #main-calendar,#main-calendar:not(.zoom),#calendar-popup .booking-calendar{overflow-x:auto;max-height:none;overscroll-behavior-x:contain;overscroll-behavior-y:auto}
+  #main-calendar .calendar-grid,#main-calendar.zoom .calendar-grid,#calendar-popup .preview-grid{width:calc(175% - 25.5px);min-width:0;grid-template-columns:34px repeat(7,minmax(0,1fr))}
+  #main-calendar .time-label,#calendar-popup .time-label{position:sticky;left:0;z-index:6}
+  #main-calendar .day-head:first-child,#calendar-popup .day-head:first-child{left:0;z-index:7}
+  #main-calendar .booking-block strong{font-size:12px}
+}
